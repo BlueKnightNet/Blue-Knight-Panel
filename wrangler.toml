@@ -1,0 +1,33 @@
+name = "blueknight-panel"
+main = "worker.js"
+# nodejs_compat v2 (which this bundle needs for globalThis.process) requires a
+# compatibility_date of 2024-09-23 or later. With an older date the Worker
+# throws "Cannot read properties of undefined (reading getBuiltinModule)" on boot.
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[vars]
+# You can optionally set static environment variables here
+# PANEL_PASSWORD = "..."
+
+# ---------------------------------------------------------------------------
+# REQUIRED: replace the placeholder id below with a real KV namespace id, or
+# every KV-backed route (setup, login, settings) will fail at runtime.
+#
+#   npx wrangler kv namespace create BK_KV
+#
+# then paste the returned id here. The binding name must stay BK_KV (or WD_KV).
+# ---------------------------------------------------------------------------
+[[kv_namespaces]]
+binding = "BK_KV"
+id = "YOUR_KV_NAMESPACE_ID"   # <-- replace me
+# preview_id = "YOUR_PREVIEW_KV_NAMESPACE_ID"
+
+# NOTE: this file configures Cloudflare *Workers* only. Cloudflare Pages will
+# reject a Workers config, so Pages deployments must set the BK_KV binding in
+# the dashboard (Settings -> Functions -> KV namespace bindings) and this file
+# should be removed or ignored in the Pages build.

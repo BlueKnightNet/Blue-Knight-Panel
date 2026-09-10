@@ -1,0 +1,25 @@
+# Render Blueprint Specification for BlueKnight Panel
+services:
+  - type: web
+    name: blueknight-panel
+    env: node
+    plan: starter
+    region: oregon
+    buildCommand: npm install --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: PANEL_PASSWORD
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 8080
+      - key: DATA_DIR
+        value: /var/data
+    disk:
+      name: blueknight-data
+      mountPath: /var/data
+      sizeGB: 1

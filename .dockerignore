@@ -1,0 +1,6 @@
+node_modules
+data
+.git
+.validation
+native/generated
+*.bak

@@ -1,0 +1,46 @@
+{
+  "name": "blueknight-panel",
+  "version": "5.2.1",
+  "description": "BlueKnight Panel \u2014 Universal Proxy & Encrypted DNS Control Panel",
+  "main": "server.js",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "node test.mjs",
+    "test:proxy": "node test-proxy.mjs",
+    "test:edge": "node test-edge.mjs",
+    "test:connections": "node test-connections.mjs",
+    "test:adapters": "node test-adapters.mjs",
+    "test:native": "node test-native.mjs",
+    "test:dns": "node test-dns.mjs",
+    "test:dns:live": "node test-dns-live.mjs",
+    "native:generate": "node deploy-native.mjs",
+    "test:all": "node test.mjs && node test-edge.mjs && node test-proxy.mjs && node test-connections.mjs && node test-adapters.mjs && node test-dns.mjs",
+    "deploy": "node deploy.mjs",
+    "cf:deploy": "wrangler deploy",
+    "cf:dev": "wrangler dev"
+  },
+  "keywords": [
+    "blueknight",
+    "proxy",
+    "vless",
+    "trojan",
+    "shadowsocks",
+    "xhttp",
+    "openvpn",
+    "doh",
+    "cloudflare-workers",
+    "flyio",
+    "render",
+    "railway",
+    "koyeb",
+    "vercel",
+    "netlify"
+  ],
+  "author": "BlueKnight Team",
+  "license": "MIT"
+}

@@ -1,0 +1,33 @@
+# fly.toml app configuration file for BlueKnight Panel
+app = "blueknight-panel"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  NODE_ENV = "production"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 1000
+    soft_limit = 800
+
+[[http_service.checks]]
+  grace_period = "5s"
+  interval = "15s"
+  method = "GET"
+  path = "/api/health"
+  timeout = "3s"
+
+[mounts]
+  source = "blueknight_data"
+  destination = "/app/data"

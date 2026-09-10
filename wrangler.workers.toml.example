@@ -1,0 +1,16 @@
+# Separate Workers deployment. Copy to wrangler.workers.toml and fill in the
+# two ids below; the real file is gitignored so account ids stay out of the repo.
+name = "blueknight-panel-worker"
+main = "worker.js"
+account_id = "YOUR_CLOUDFLARE_ACCOUNT_ID"   # <-- replace me (Dashboard -> Workers -> Account ID)
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[kv_namespaces]]
+binding = "BK_KV"
+id = "YOUR_KV_NAMESPACE_ID"   # <-- replace me (npx wrangler kv namespace create BK_KV)

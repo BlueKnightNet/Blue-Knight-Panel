@@ -1,0 +1,10 @@
+{
+  "install": "npm install",
+  "start": "node server.js",
+  "watch": {
+    "throttle": 1000,
+    "ignore": [
+      "data/*"
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+# Koyeb App Specification for BlueKnight Panel
+name: blueknight-panel
+services:
+  - name: blueknight-service
+    type: web
+    docker:
+      dockerfile: Dockerfile
+    ports:
+      - port: 8080
+        path: /
+    routes:
+      - path: /
+    health_checks:
+      - http:
+          path: /api/health
+          port: 8080
+        interval: 30
+        timeout: 5
+    env:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "8080"

@@ -1,0 +1,59 @@
+# ---------------------------------------------------------------------------
+# Secrets and live state — never commit these.
+# ---------------------------------------------------------------------------
+# server.js writes the admin password hash, JWT secret, VLESS UUID, Trojan
+# password and subscription tokens here. The whole directory is ignored, not
+# just the current filename, so the pre-rename whitedns_kv.json and any future
+# store cannot slip in either.
+data/
+*.env
+.env
+.env.*
+!.env.example
+# Wrangler's "pages download config" writes the project's real bindings and KV
+# namespace ids into a staging copy of wrangler.toml.
+.dev.vars
+.dev.vars.*
+*.pem
+*.key
+!native/**/*.key.example
+
+# ---------------------------------------------------------------------------
+# Local tool state and scratch output
+# ---------------------------------------------------------------------------
+node_modules/
+package-lock.json
+# miniflare/wrangler local state, including a sqlite copy of the KV namespace
+.wrangler/
+# deploy.mjs staging dirs, generated client profiles (they embed UUIDs and
+# passwords), panel.env fixtures and publish logs
+.validation/
+native/generated/
+test_suite_results.txt
+*.log
+
+# ---------------------------------------------------------------------------
+# Duplicated theme wallpapers
+# ---------------------------------------------------------------------------
+# The CSS resolves url('/assets/theme-bg-N.jpg'), which is served out of
+# public/assets/ on every target, and deploy.mjs preflights that copy. The
+# root-level and assets/ copies are byte-identical duplicates — 8.8MB of the
+# same ten images. assets/README.md is kept: it documents the theme mapping.
+/theme-bg-*.jpg
+/assets/*.jpg
+
+# ---------------------------------------------------------------------------
+# Build leftovers, editor and OS files
+# ---------------------------------------------------------------------------
+worker.js.bak
+*.bak
+dist/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Real Cloudflare account id and KV namespace id live here; the committed
+# template is wrangler.workers.toml.example.
+wrangler.workers.toml
