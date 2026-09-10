@@ -1899,7 +1899,7 @@ function renderDashboardPage(options) {
           <div class="nav-section">Community</div>
           <a href="${APP_CONFIG.telegramChannel}" target="_blank" rel="noopener noreferrer" class="nav-btn">
             <span class="nav-icon">\u{1F4E2}</span>
-            <span>Telegram Channel</span>
+            <span>Telegram</span>
             <span class="nav-tag">News</span>
           </a>
         </nav>
