@@ -1571,6 +1571,11 @@ function renderLoginPage(options) {
 
       <div style="margin-top: 22px; text-align: center; font-size: 11.5px; color: var(--theme-text-muted);">
         BlueKnight Panel &bull; Encrypted DNS &amp; Proxy Dashboard
+        <div style="margin-top: 8px;">
+          <a href="${APP_CONFIG.telegramChannel}" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; gap: 6px; font-weight: 700; color: var(--theme-primary);">
+            <span>📢</span><span>@BlueKnight_Net on Telegram</span>
+          </a>
+        </div>
       </div>
 
     </div>
@@ -1650,6 +1655,11 @@ function renderSetupPage(options) {
 
       <div style="margin-top: 22px; text-align: center; font-size: 11.5px; color: var(--theme-text-muted);">
         BlueKnight Panel &bull; Encrypted DNS &amp; Proxy Dashboard
+        <div style="margin-top: 8px;">
+          <a href="${APP_CONFIG.telegramChannel}" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; gap: 6px; font-weight: 700; color: var(--theme-primary);">
+            <span>📢</span><span>@BlueKnight_Net on Telegram</span>
+          </a>
+        </div>
       </div>
 
     </div>
@@ -1885,6 +1895,12 @@ function renderDashboardPage(options) {
             <span class="nav-icon">\u{1FA7A}</span>
             <span>API Health</span>
             <span class="nav-tag">Live</span>
+          </a>
+          <div class="nav-section">Community</div>
+          <a href="${APP_CONFIG.telegramChannel}" target="_blank" rel="noopener noreferrer" class="nav-btn">
+            <span class="nav-icon">\u{1F4E2}</span>
+            <span>Telegram Channel</span>
+            <span class="nav-tag">News</span>
           </a>
         </nav>
       </div>
@@ -6553,6 +6569,9 @@ var init_worker = __esm({
       // No defaultJwtSecret here on purpose: a signing key committed to a
       // public repo is a master key to every deployment that uses it.
       defaultDevPassword: "blueknight123",
+      // Development channel, surfaced in the sidebar and on the login page so
+      // operators know where updates and support actually come from.
+      telegramChannel: "https://t.me/BlueKnight_Net",
       sessionMaxAgeSeconds: 60 * 60 * 24 * 7,
       // 7 days
       defaultProxyPath: "/bk-ws",
@@ -9376,7 +9395,28 @@ textarea:focus-visible,
           }
           const themeMatch = pathname.match(/^\/(?:assets\/)?theme-bg(?:-([1-9]|10))?\.jpg$/);
           if (pathname.startsWith("/assets/")) {
-            return env2.ASSETS ? env2.ASSETS.fetch(request) : new Response("Asset not found", { status: 404 });
+            if (env2.ASSETS) {
+              return env2.ASSETS.fetch(request);
+            }
+            // No static-asset binding: this is a single-file Workers deploy
+            // (dashboard paste, or `wrangler deploy` without [assets]). Serve
+            // the wallpapers baked into this bundle so the themes still render
+            // instead of falling back to a flat colour. Populated by
+            // `npm run build:standalone`; empty in the repo copy so the source
+            // file stays reviewable.
+            const embedded = THEME_BG_DATA_URIS[pathname.slice("/assets/".length)];
+            if (embedded) {
+              const comma = embedded.indexOf(",");
+              const meta = embedded.slice(5, comma);
+              const bytes = decodeBase64(embedded.slice(comma + 1));
+              return new Response(bytes, {
+                headers: {
+                  "Content-Type": meta.replace(";base64", "") || "image/jpeg",
+                  "Cache-Control": "public, max-age=31536000, immutable"
+                }
+              });
+            }
+            return new Response("Asset not found", { status: 404 });
           }
           if (pathname === "/") {
             return Response.redirect(`${url.origin}/panel/login`, 302);

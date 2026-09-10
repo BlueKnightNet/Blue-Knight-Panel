@@ -1,7 +1,7 @@
 {
   "name": "blueknight-panel",
   "version": "5.2.1",
-  "description": "BlueKnight Panel \u2014 Universal Proxy & Encrypted DNS Control Panel",
+  "description": "BlueKnight Panel — Universal Proxy & Encrypted DNS Control Panel",
   "main": "server.js",
   "type": "module",
   "engines": {
@@ -22,7 +22,9 @@
     "test:all": "node test.mjs && node test-edge.mjs && node test-proxy.mjs && node test-connections.mjs && node test-adapters.mjs && node test-dns.mjs",
     "deploy": "node deploy.mjs",
     "cf:deploy": "wrangler deploy",
-    "cf:dev": "wrangler dev"
+    "cf:dev": "wrangler dev",
+    "build:standalone": "node build-standalone.mjs",
+    "test:standalone": "node test-standalone.mjs"
   },
   "keywords": [
     "blueknight",

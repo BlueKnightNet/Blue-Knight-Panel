@@ -1,19 +1,286 @@
 # BlueKnight Panel
 
-Proxy panel, encrypted DNS gateway, and client subscriptions for Cloudflare and Node hosts.
+A proxy control panel, encrypted-DNS gateway and client-subscription server in a
+single file. It runs on Cloudflare's edge or on any Node 22+ host, carries
+VLESS, Trojan and Shadowsocks over WebSocket, resolves DNS over HTTPS, and hands
+your clients a ready-made subscription URL for v2rayN, Clash.Meta, sing-box,
+Shadowrocket and friends.
 
-Version **5.2.1**. Live panel: https://your-project.pages.dev/panel
+**Version 5.2.1** · Updates and support: **[@BlueKnight_Net on Telegram](https://t.me/BlueKnight_Net)**
 
-Workers test panel: https://your-worker.your-subdomain.workers.dev/panel
-It shares the Pages panel's login and saved settings. Update it with `npx wrangler deploy --config wrangler.workers.toml` after running `BlueKnight-Deploy.cmd --check`.
+---
 
-To update the existing Pages site without replacing its saved settings:
+## Contents
 
-```bat
-BlueKnight-Deploy.cmd cloudflare-pages --project=your-project --branch=your-branch --yes
+- [Fastest path: the release build](#fastest-path-the-release-build)
+- [Deploying, platform by platform](#deploying-platform-by-platform)
+- [How the panel works](#how-the-panel-works)
+- [Themes and backgrounds](#themes-and-backgrounds)
+- [Security](#security)
+- [Development](#development)
+
+---
+
+## Fastest path: the release build
+
+The [Releases page](https://github.com/BlueKnightNet/Blue-Knight-Panel/releases)
+carries two prebuilt artifacts, so you do not have to clone anything:
+
+| Artifact | What it is | Use it when |
+| :--- | :--- | :--- |
+| `worker-standalone.js` | One self-contained file — every `lib/` module inlined and all ten wallpapers embedded as data URIs (~1.8 MB, under the 3 MB Workers free-plan limit) | You want to paste a worker into the Cloudflare dashboard and be done |
+| `BlueKnight-Deploy.cmd` | Double-clickable Windows launcher for the interactive deploy picker | You have the repo cloned on Windows and want a menu instead of a CLI |
+
+### Paste-deploy to Cloudflare Workers in four steps
+
+1. Cloudflare dashboard → **Workers & Pages** → **Create** → **Start from Hello World**.
+2. **Edit code**, select everything, paste the contents of `worker-standalone.js`, **Deploy**.
+3. **Settings → Variables → KV Namespace Bindings** → add a namespace bound to the
+   name `BK_KV`. Create one first under **Storage & Databases → KV** if you have none.
+4. **Settings → Runtime** → set the compatibility date to `2024-09-23` or later and
+   enable the `nodejs_compat` flag. Redeploy.
+
+Open `https://<your-worker>.workers.dev/panel` and set an admin password.
+
+> Without the `BK_KV` binding the panel cannot store your password or sign
+> sessions, and it will refuse to log you in rather than fall back to a shared
+> key. Step 3 is not optional.
+
+### Why a separate standalone build?
+
+The `worker.js` in this repo imports `./lib/dns-wire.mjs`,
+`./lib/subscription-native.mjs` and `./lib/ss-websocket.mjs`, and it serves
+`/assets/theme-bg-N.jpg` from a static-asset binding. Pasted into the dashboard
+as-is, it fails on the first import and renders every theme on a flat colour.
+`build-standalone.mjs` bundles the imports and bakes the wallpapers in:
+
+```bash
+npm run build:standalone   # -> dist/worker-standalone.js
+npm run test:standalone    # verifies imports, wallpapers and the 3MB budget
 ```
 
-See [the deployment guide](DEPLOYMENT.md#update-your-panel) for validation, production-branch details and native-server requirements.
+---
+
+## Deploying, platform by platform
+
+Everything below is also driven by one interactive picker:
+
+```bash
+npm run deploy          # or: node deploy.mjs
+node deploy.mjs --list  # show every target
+node deploy.mjs --check # run all six test suites, deploy nothing
+```
+
+On Windows, double-click `BlueKnight-Deploy.cmd` for the same menu.
+`deploy.mjs` runs the full test suite as a preflight and refuses to deploy if
+anything fails.
+
+| Target | Proxy tunnel | Settings storage |
+| :--- | :--- | :--- |
+| Cloudflare Workers | yes | KV namespace |
+| Cloudflare Pages | yes | KV binding |
+| Vercel | yes | Redis REST |
+| Netlify | panel/DNS only | Redis REST |
+| Fly.io | yes | volume |
+| Railway | yes | volume |
+| Render | yes | disk |
+| Koyeb | yes | Redis REST |
+| Docker / VPS | yes | bind mount |
+| Local | yes | `./data` |
+| Native (sing-box) | yes | Docker volumes |
+
+**Proxy tunnel = can carry VLESS/Trojan traffic.** Every target serves the panel
+and DNS; Netlify's function runtime cannot hold a WebSocket open, so point
+clients at a tunnel-capable host and use Netlify for the panel only.
+
+### Cloudflare Workers
+
+```bash
+node deploy.mjs cloudflare
+```
+
+Creates the KV namespace, writes the binding, sets the compatibility flags and
+deploys. To keep a Workers deployment beside a Pages one, copy
+`wrangler.workers.toml.example` to `wrangler.workers.toml`, fill in your account
+and KV ids, then `npx wrangler deploy --config wrangler.workers.toml`. That file
+is gitignored because it holds real ids.
+
+### Cloudflare Pages
+
+```bash
+node deploy.mjs cloudflare-pages --project=<project> --branch=<production-branch>
+```
+
+Bindings live on the Pages project, not in `wrangler.toml`. The deploy downloads
+the project's existing configuration first, so your KV binding and environment
+variables survive the upload. Set the `BK_KV` binding once under
+**Settings → Functions → KV namespace bindings**.
+
+Pages serves `public/` statically, so the wallpapers come from `public/assets/`
+and you do not need the standalone build.
+
+### Vercel
+
+```bash
+node deploy.mjs vercel
+```
+
+Needs **Fluid compute** enabled for WebSocket tunnels, and a Redis-compatible
+REST store: set `KV_REST_API_URL` and `KV_REST_API_TOKEN` (Vercel Marketplace
+KV) or `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`. Function duration
+limits apply to long-lived tunnels.
+
+### Netlify
+
+```bash
+node deploy.mjs netlify
+```
+
+Panel, DNS and subscriptions only. Use `UPSTASH_REDIS_REST_URL` and
+`UPSTASH_REDIS_REST_TOKEN` for storage.
+
+### Fly.io / Railway / Render / Koyeb
+
+```bash
+node deploy.mjs fly       # fly.toml,     persistent volume
+node deploy.mjs railway   # railway.json, persistent volume
+node deploy.mjs render    # render.yaml,  persistent disk
+node deploy.mjs koyeb     # koyeb.yaml,   Redis REST
+```
+
+These run `server.js` on Node 22+. Settings persist to `DATA_DIR`
+(default `./data`) — mount a volume there or the panel regenerates its
+identities on every cold start. Koyeb has no disk, so give it a Redis REST store.
+
+### Docker / self-hosted VPS
+
+```bash
+docker build -t blueknight-panel .
+docker run -d --name blueknight \
+  -p 8080:8080 \
+  -v /srv/blueknight/data:/app/data \
+  -e PANEL_PASSWORD='<a strong password>' \
+  -e JWT_SECRET="$(openssl rand -hex 32)" \
+  blueknight-panel
+```
+
+The bind mount is what makes settings durable. Put it behind a TLS-terminating
+reverse proxy — the session cookie only gets its `Secure` flag over HTTPS.
+
+### Local
+
+```bash
+npm install
+npm start                 # http://localhost:8080/panel
+```
+
+Settings go to `./data/blueknight_kv.json`, which is gitignored.
+
+### Native VPN stack
+
+```bash
+node deploy.mjs native --host=vpn.example.com --prepare-only
+node deploy.mjs native --host=vpn.example.com \
+  --protocols=shadowtls,shadowsocks,hysteria2,tuic,anytls,openvpn \
+  --cert=cert.pem --key=key.pem
+```
+
+Generates a sing-box + OpenVPN Docker stack under `native/generated/`
+(gitignored) with matching client profiles. TLS protocols need a real
+certificate and key.
+
+---
+
+## How the panel works
+
+### One worker, several jobs
+
+`worker.js` exports a single `fetch` handler that every target shares — the
+Cloudflare entry point, the Pages function in `functions/[[path]].js`, and the
+Node server in `server.js`, which shims the Workers APIs (`WebSocketPair`,
+Workers-style `Response`) onto Node's `http` and `net`. That is why one codebase
+deploys to eleven places: only the storage adapter and the socket layer change.
+
+Requests are dispatched by path:
+
+| Path | Purpose |
+| :--- | :--- |
+| `/panel`, `/panel/login`, `/panel/setup` | The admin UI (session-cookie auth) |
+| `/bk-ws`, `/bk-ws/vless`, `/bk-ws/trojan` | WebSocket proxy inbound |
+| `/bk-xhttp` | HTTP-streaming (XHTTP) inbound |
+| `/dns-query`, `/dns-json` | DoH gateway — RFC 8484 wire format and JSON |
+| `/sub/<format>?token=…` | Client subscription feeds |
+| `/api/node/export`, `/api/node/import` | Node-share sync between panels |
+| `/api/health`, `/api/proxy-debug` | Diagnostics |
+| `/assets/*` | Theme wallpapers |
+
+`/wd-*` paths are the pre-rename aliases and still work.
+
+### Proxy path
+
+A client opens a WebSocket to `/bk-ws`. The worker reads the first frame, parses
+it as a VLESS or Trojan header (or Shadowsocks, via `lib/ss-websocket.mjs`),
+authenticates it against the UUID or password in storage, opens a TCP socket to
+the requested destination with `connect()`, and pipes the two together. Optional
+extras: TLS ClientHello **fragmentation** to break up SNI-based blocking, and
+**chain proxying** through an upstream SOCKS/HTTP/VLESS hop.
+
+### DNS path
+
+`/dns-query` accepts RFC 8484 GET and POST and forwards to the configured
+upstream resolver (Cloudflare by default) over HTTP/2. `/dns-json` answers the
+JSON API. `lib/dns-wire.mjs` decodes wire-format answers so the panel can show
+real resolution latency.
+
+### Subscriptions
+
+The panel generates client configs on demand from current settings — nothing is
+stored pre-rendered. Formats: `vless`, `trojan`, `clash`, `singbox`, `xray`,
+`xray-json`, `ss`, `warp`, `amnezia`, `openvpn`, `native`, and `all` (a combined
+sing-box profile). Each is a URL of the form:
+
+```
+https://<host>/sub/clash?token=<subToken>
+```
+
+Paste it into your client as a subscription and it updates itself whenever you
+change settings in the panel.
+
+### Storage
+
+Everything mutable — the admin password hash, the session signing key, the VLESS
+UUID, the Trojan password, subscription tokens and all settings — lives behind
+one small key/value interface (`lib/kv-store.mjs`) with three backends:
+Cloudflare KV, a Redis-compatible REST API, or a JSON file on disk. Settings are
+cached in memory for a short TTL to keep KV reads down.
+
+### WARP
+
+The panel can register a Cloudflare WARP account, generate WireGuard keys with a
+bundled X25519 implementation, and emit WARP or Amnezia (noise-obfuscated)
+profiles.
+
+---
+
+## Themes and backgrounds
+
+Ten themes, each with its own wallpaper, overlay tint and accent palette; the
+picker and the dice button are in the panel header. `assets/README.md` documents
+the theme-to-wallpaper mapping.
+
+The images are served three different ways depending on where you deployed:
+
+- **Pages, Netlify, Vercel** — statically from `public/assets/`.
+- **Node hosts** (Fly, Railway, Render, Koyeb, Docker, local) — streamed from
+  disk by `server.js`.
+- **Single-file Workers** — from the data URIs baked into
+  `dist/worker-standalone.js`, because a pasted worker has no asset binding.
+
+If a theme ever renders on a flat colour, the wallpaper request 404'd: you are
+running an unbundled `worker.js` without an `ASSETS` binding. Use the standalone
+build.
+
+---
 
 ## Security
 
@@ -37,85 +304,44 @@ The panel is an administrative control plane for proxy tunnels. Treat it as one.
   `.gitignore` covers them; check `git status` before a first push anyway.
 
 Every response carries `X-Frame-Options: DENY`, `X-Content-Type-Options:
-nosniff` and `Referrer-Policy: no-referrer`. HTML responses add a
-`Content-Security-Policy` whose `form-action 'self'`, `frame-ancestors 'none'`,
-`base-uri 'none'` and `connect-src 'self'` directives limit what an injected
-script could do. `'unsafe-inline'` remains necessary for scripts and styles
-while the markup uses inline `onclick` handlers.
+nosniff` and `Referrer-Policy: no-referrer`. HTML responses add a Content
+Security Policy with `form-action 'self'`, `base-uri 'none'` and
+`frame-ancestors 'none'`.
 
-## Connection support
+An upgrade from an older release migrates itself: log in once with your existing
+password and the stored cleartext is replaced by a PBKDF2 record.
 
-- VLESS and Trojan over WebSocket: implemented TCP tunnels on Cloudflare Workers/Pages and Node hosts.
-- HTTP streaming endpoint: experimental raw VLESS/Trojan streaming; not advertised as Xray split-HTTP. HTTP Upgrade links are withheld because that transport is not implemented.
-- ShadowTLS v3, Shadowsocks 2022, Hysteria2, TUIC and AnyTLS: real sing-box servers and matching client configuration from the native deployment generator.
-- OpenVPN: real Linux Docker service with persistent PKI, TLS-crypt, routing/NAT, and an authenticated `.ovpn` download. Requires TUN and NET_ADMIN.
-- DNS-over-HTTPS: GET/POST wire format forwarding and a JSON endpoint decoded from standard DNS responses, including providers without a JSON API.
-- WARP/Amnezia: exports require configured credentials. Exporting a file does not verify provider registration or Amnezia server compatibility.
+---
 
-Shadowsocks now has its own working WebSocket handler, using AES-128-GCM, AES-256-GCM or ChaCha20-Poly1305. Combined Xray URI/JSON, Sing-box and Clash feeds include it alongside VLESS and Trojan. URI clients need v2ray-plugin with multiplexing disabled. OpenVPN profiles still require a provisioned native server.
+## Development
 
-In Subscriptions, use **VLESS + Trojan + Shadowsocks — combined subscription** for URI clients, or **All configured protocols — Sing-box 1.14+** to include provisioned native connections too. The VLESS Direct Feed remains VLESS-only. Refresh the subscription in the client after changing its URL. VMess, Xray split-HTTP, gRPC and HTTP Upgrade are not implemented by this Pages handler; sample links for those protocols cannot make it serve them.
-
-## Start the panel
-
-```sh
-npm start
+```bash
+npm install
+npm start                # run locally on :8080
+npm run test:all         # six regression suites
+npm run build:standalone # dist/worker-standalone.js
+npm run test:standalone  # check the release artifact
 ```
 
-Open http://localhost:8080/panel/setup. Settings live in `data/blueknight_kv.json`. Set `DATA_DIR` to a persistent volume, or configure a Redis REST store. `PANEL_PASSWORD`, `JWT_SECRET`, `VLESS_UUID`, `TROJAN_PASSWORD` and `SUB_TOKEN` can supply stable identities.
+| Suite | Covers |
+| :--- | :--- |
+| `test.mjs` | Settings persistence, tab deep links |
+| `test-edge.mjs` | Vercel/Netlify KV adapters, env identity |
+| `test-proxy.mjs` | Frame codec, WebSocket handshake, VLESS→TCP echo |
+| `test-connections.mjs` | CONNECT/SOCKS5, HTTP streaming, all subscription routes |
+| `test-adapters.mjs` | Serverless adapter round-trips |
+| `test-dns.mjs` | DNS wire decoding and HTTP/2 forwarding |
 
-## Native connections on a Linux Docker host
+`deploy.mjs` runs all six before any deployment.
 
-```sh
-node deploy-native.mjs --host=vpn.example.com
-```
+---
 
-This prepares ShadowTLS, Shadowsocks and OpenVPN under `native/generated`. It refuses to overwrite an existing deployment's credentials. On the target Linux host:
+## Links
 
-```sh
-cd native/generated
-docker compose -f compose.json config --quiet
-docker compose -f compose.json run --rm sing-box check -c /etc/sing-box/sing-box.json
-docker compose -f compose.json up -d --build
-docker compose -f compose.json ps
-```
+- **Telegram channel — [@BlueKnight_Net](https://t.me/BlueKnight_Net)** — releases, support, development news
+- [Deployment guide](DEPLOYMENT.md) — per-provider detail, update procedures, verification
+- [Connection audit](CONNECTION-AUDIT.md) — protocol and transport coverage notes
 
-For all six native types, supply a real matching certificate and private key:
+## License
 
-```sh
-node deploy-native.mjs --host=vpn.example.com --protocols=shadowtls,shadowsocks,hysteria2,tuic,anytls,openvpn --cert=/path/fullchain.pem --key=/path/privkey.pem
-```
-
-The panel is bound to localhost:8080; configure HTTPS for remote administration. The generated README lists required TCP/UDP ports and profile export commands. Generated client files contain credentials. The OpenVPN container creates its certificates on first startup; no placeholder certificate is used.
-
-## Deploy and verify
-
-See [DEPLOYMENT.md](DEPLOYMENT.md) for platform requirements and [CONNECTION-AUDIT.md](CONNECTION-AUDIT.md) for verification results and remaining limitations.
-
-```sh
-node deploy.mjs --list
-npm run test:all
-```
-
-Native integration checks require sing-box and a localhost test certificate:
-
-```sh
-SING_BOX_BIN=/path/sing-box TEST_TLS_CERT=/path/localhost.crt TEST_TLS_KEY=/path/localhost.key npm run test:native
-```
-
-Theme images are served from `public/assets`; deploy those assets along with the Worker. Copying only worker.js into a dashboard no longer includes wallpapers.
-
-Cloudflare subscriptions default to all six supported HTTPS ports: 443, 2053, 2083, 2087, 2096 and 8443. Combined feeds include 18 base nodes (six VLESS, six Trojan and six Shadowsocks when enabled). Configured static IPs and enabled fronting variants are included consistently in VLESS, Trojan, Xray, Clash and Sing-box exports, without truncating the IP pool. Other hosts default to 443; PROXY_PORTS overrides the defaults. Port availability still depends on the deployment and network.
-
-## Windows deployment launcher
-
-Double-click `BlueKnight-Deploy.cmd` for the platform picker (native stack is option 11). From a terminal:
-
-```bat
-BlueKnight-Deploy.cmd --check
-BlueKnight-Deploy.cmd cloudflare
-BlueKnight-Deploy.cmd native --host=vpn.example.com --prepare-only
-BlueKnight-Deploy.cmd native
-```
-
-`--check` validates the project without deploying. `--prepare-only` generates native files without starting services. Running `native` again reuses the generated credentials and starts the stack after Docker checks. Configuration changes require a new `--out` directory. Node 22+ is required; Node 24 LTS is recommended. Terminal invocations return their exit code without pausing; the double-click picker pauses when finished.
+MIT
