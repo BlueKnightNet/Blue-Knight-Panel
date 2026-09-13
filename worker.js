@@ -1,4 +1,7 @@
 import { queryDnsJson } from './lib/dns-wire.mjs';
+import { readDns, normalizeDns, dnsFromForm, dnsControls, singboxDns, singboxDnsExtras, clashDns, clashDnsRules, validateDoh } from './lib/client-dns.mjs';
+import { fetchDnsWithFallback } from './lib/dns-fallback.mjs';
+import { applyXrayDns } from './lib/xray-dns.mjs';
 import { mergeNativeSubscription } from './lib/subscription-native.mjs';
 import { SS_METHODS, serveShadowsocks } from './lib/ss-websocket.mjs';
 var __defProp = Object.defineProperty;
@@ -204,6 +207,7 @@ async function getOrInitSettings(env2) {
   let ssPassword = null;
   let ssMethod = null;
   let dnsCustom = null;
+  let clientDnsSettings = null;
   if (kv) {
     try {
       [
@@ -264,7 +268,8 @@ async function getOrInitSettings(env2) {
         ssEnabledStr,
         ssPassword,
         ssMethod,
-        dnsCustom
+        dnsCustom,
+        clientDnsSettings
       ] = await Promise.all([
         kv.get(KV_KEYS.vlessUuid),
         kv.get(KV_KEYS.trojanPassword),
@@ -323,7 +328,8 @@ async function getOrInitSettings(env2) {
         kv.get(KV_KEYS.ssEnabled),
         kv.get(KV_KEYS.ssPassword),
         kv.get(KV_KEYS.ssMethod),
-        kv.get(KV_KEYS.dnsCustom)
+        kv.get(KV_KEYS.dnsCustom),
+        kv.get(KV_KEYS.clientDnsSettings)
       ]);
     } catch (err) {
       console.warn("Could not read settings from KV:", err);
@@ -432,7 +438,8 @@ async function getOrInitSettings(env2) {
     ssEnabled: ssEnabledStr !== "false",
     ssPassword: ssPassword ? ssPassword.trim() : "BlueKnight-" + (vlessUuid ? vlessUuid.slice(0, 8) : "Pass2026"),
     ssMethod: ssMethod ? ssMethod.trim() : "chacha20-ietf-poly1305",
-    dnsCustom: dnsCustom ? dnsCustom.trim() : ""
+    dnsCustom: dnsCustom ? dnsCustom.trim() : "",
+    clientDns: readDns(clientDnsSettings)
   };
   cachedSettings = settings;
   cachedSettingsTimestamp = now;
@@ -1209,7 +1216,8 @@ async function getExpectedPassword(env2) {
 // The admin password used to sit in KV as cleartext, so anyone who could read
 // the namespace -- a dashboard session, a KV dump, a leaked binding -- read the
 // password itself, and people reuse passwords.
-var PBKDF2_ITERATIONS = 21e4;
+// Cloudflare Workers Web Crypto supports at most 100,000 PBKDF2 iterations.
+var PBKDF2_ITERATIONS = 100000;
 var PBKDF2_PREFIX = "pbkdf2$";
 function bytesToB64(bytes) {
   let bin = "";
@@ -2724,6 +2732,7 @@ function renderDashboardPage(options) {
            TAB 5: DNS SETTINGS (UPSTREAM DOH SELECTOR & TESTER)
            ==================================================================== -->
       <section id="tab-dns" class="tab-pane ${initialTab === "dns" ? "active" : ""}">
+        ${dnsControls(settings.clientDns)}
         
         <div class="grid-2col" style="margin-bottom: 16px;">
           <!-- Upstream Provider Selector -->
@@ -2739,7 +2748,7 @@ function renderDashboardPage(options) {
               <label class="form-label" for="dnsCustom">Custom DoH / DNS Upstream URL (Optional)</label>
               <input type="text" id="dnsCustom" name="dnsCustom" class="form-control code-input" value="${settings.dnsCustom || ""}" placeholder="e.g. https://dns.adguard-dns.com/dns-query or https://dns.alidns.com/dns-query" />
               <div style="font-size: 11px; color: var(--theme-text-muted); margin-top: 4px;">
-                \u{1F4A1} When filled, this custom upstream overrides presets for /dns-query, /dns-json, and subscription DNS!
+                \u{1F4A1} Overrides the primary upstream for /dns-query and /dns-json. Client subscriptions use it when their resolver is set to panel.
               </div>
             </div>
 
@@ -2861,7 +2870,7 @@ function renderDashboardPage(options) {
                   <span>Enable Chain</span>
                 </label>
               </div>
-              <p class="card-desc">Worker bridges traffic outbound via upstream HTTP/SOCKS5; Clash &amp; Sing-box inject dialer-proxy/detour.</p>
+              <p class="card-desc">Worker forwards site traffic through your external HTTP/SOCKS5 exit. Test that the exit can access your target sites. Client subscriptions connect to the Worker normally; upstream credentials stay on the server.</p>
 
               <div style="display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 8px; margin-bottom: 10px;">
                 <div>
@@ -3512,6 +3521,11 @@ async function handlePanel(request, env2) {
         const formData = await request.formData();
         const currentSettings = await getOrInitSettings(env2);
         const updates = [];
+        if (formData.has("clientDnsSettings")) {
+          initialTab = "dns";
+          const value = JSON.stringify(dnsFromForm(formData));
+          if (value !== JSON.stringify(currentSettings.clientDns)) updates.push({ key: KV_KEYS.clientDnsSettings, value });
+        }
         const check = /* @__PURE__ */ __name((key, fieldName, newVal, oldVal) => {
           if (formData.has(fieldName) && newVal !== oldVal) {
             updates.push({ key, value: newVal });
@@ -3559,7 +3573,7 @@ async function handlePanel(request, env2) {
         }
         if (formData.has("dnsDoH")) {
           if (!formData.has("vlessUuid")) initialTab = "dns";
-          check(KV_KEYS.dnsDoH, "dnsDoH", String(formData.get("dnsDoH") || "").trim(), currentSettings.dnsDoH);
+          check(KV_KEYS.dnsDoH, "dnsDoH", validateDoh(String(formData.get("dnsDoH") || "").trim()), currentSettings.dnsDoH);
         }
         if (formData.has("allowLANConnection") || formData.has("staticIpList")) {
           initialTab = "protocols";
@@ -3606,7 +3620,7 @@ async function handlePanel(request, env2) {
         }
         if (formData.has("dnsCustom")) {
           if (!formData.has("vlessUuid")) initialTab = "dns";
-          check(KV_KEYS.dnsCustom, "dnsCustom", String(formData.get("dnsCustom") || "").trim(), currentSettings.dnsCustom);
+          check(KV_KEYS.dnsCustom, "dnsCustom", validateDoh(String(formData.get("dnsCustom") || "").trim()), currentSettings.dnsCustom);
         }
         if (formData.has("openvpnEnabled") || formData.has("openvpnPort") || formData.has("openvpnCipher")) {
           initialTab = "protocols";
@@ -4128,8 +4142,8 @@ ${reservedLine}`.trim();
     const hasWarp = Boolean(settings.warpPrivateKey);
     const hasChain = Boolean(settings.chainEnabled && settings.chainAddress);
     const awg = validateAwgParams(settings);
-    const chainProxyEntry = buildClashChainProxy(settings);
-    const dialerProxyProp = hasChain ? '\n    dialer-proxy: "Chain-Upstream"' : "";
+    const chainProxyEntry = "";
+    const dialerProxyProp = "";
     const reservedArr = parseReserved(settings.warpReserved);
     const reservedYaml = reservedArr ? `
     reserved: [${reservedArr.join(", ")}]` : "";
@@ -4157,9 +4171,9 @@ ${reservedLine}`.trim();
     public-key: "${settings.warpPeerPublicKey}"
     private-key: "${settings.warpPrivateKey}"
     udp: true
-    remote-dns-resolve: true${reservedYaml}${hasChain ? '\n    dialer-proxy: "Chain-Upstream"' : ""}${awgYaml}` : "";
+    remote-dns-resolve: true${reservedYaml}${awgYaml}` : "";
     const warpProxyName = hasWarp ? '\n      - "BlueKnight-Warp"' : "";
-    const chainProxyName = hasChain ? '\n      - "Chain-Upstream"' : "";
+    const chainProxyName = "";
     let clashRules = "";
     if (settings.routingPreset === "bypass-iran") {
       clashRules = `
@@ -4241,7 +4255,8 @@ allow-lan: ${allowLanStr}
 bind-address: "${bindAddressStr}"
 mode: rule
 log-level: info
-ipv6: false
+ipv6: ${settings.clientDns.ipv6}
+${clashDns(settings.clientDns, workerHost)}
 
 proxies:${vlessClashProxies}${trojanClashProxies}${ssClashProxies}${warpProxyEntry}${chainProxyEntry}
 
@@ -4258,7 +4273,7 @@ proxy-groups:
     interval: 300
     proxies:${clashNodeListStr}${warpProxyName}
 
-rules:${clashRules}
+rules:${clashDnsRules(settings.clientDns)}${clashRules}
 `.trim();
     return new Response(proxiesYaml, {
       status: 200,
@@ -4271,7 +4286,7 @@ rules:${clashRules}
   if (protocol === "singbox") {
     const hasWarp = Boolean(settings.warpPrivateKey);
     const hasChain = Boolean(settings.chainEnabled && settings.chainAddress);
-    const detourVal = hasChain ? "chain-upstream" : void 0;
+    const detourVal = void 0;
     const vlessSingboxOutbounds = nodes.map(({ port, address, host, sni, suffix }) => ({
       type: "vless",
       tag: `BlueKnight-VLESS-${suffix}`,
@@ -4330,7 +4345,6 @@ rules:${clashRules}
           ...nodes.map(({ suffix }) => `BlueKnight-Trojan-${suffix}`),
           ...ssSingboxOutbounds.map(outbound => outbound.tag),
           ...hasWarp ? ["BlueKnight-Warp"] : [],
-          ...hasChain ? ["chain-upstream"] : [],
           "direct"
         ]
       },
@@ -4349,12 +4363,6 @@ rules:${clashRules}
       });
     }
 
-    if (hasChain) {
-      const chainOut = buildSingboxChainOutbound(settings);
-      if (chainOut) {
-        outboundsList.push(chainOut);
-      }
-    }
     outboundsList.push({ type: "direct", tag: "direct" });
     const routeRules = [{ action: "sniff" }, { protocol: "dns", action: "hijack-dns" }];
     const ruleSets = [];
@@ -4373,12 +4381,7 @@ rules:${clashRules}
         level: "info",
         timestamp: true
       },
-      dns: {
-        servers: [
-          { type: "https", tag: "cf-dns", server: workerHost, path: "/dns-query", domain_resolver: "local-dns" },
-          { type: "local", tag: "local-dns" }
-        ]
-      },
+      dns: singboxDns(settings.clientDns, workerHost),
       inbounds: [
         {
           type: "mixed",
@@ -4391,13 +4394,14 @@ rules:${clashRules}
       endpoints,
       route: {
         auto_detect_interface: true,
-        default_domain_resolver: "local-dns",
+        default_domain_resolver: "bootstrap-dns",
         rule_set: ruleSets,
         final: "select",
         rules: routeRules
       }
     };
     try {
+      singboxDnsExtras(singboxConfig, settings.clientDns);
       mergeNativeSubscription(singboxConfig, env2.NATIVE_CLIENT_CONFIG);
     } catch (error) {
       return Response.json({ error: "Native subscription configuration is invalid", message: error.message }, { status: 503 });
@@ -4562,10 +4566,18 @@ rules:${clashRules}
         rules: xrayRules
       }
     };
+    const requestedNode = url.searchParams.get('node');
+    if (requestedNode) {
+      const index = xrayClientConfig.outbounds.findIndex(o => o.tag === requestedNode && ['vless', 'trojan', 'shadowsocks'].includes(o.protocol));
+      if (index < 0) return Response.json({ error: 'Unknown Xray node', message: 'Use a proxy outbound tag from this Xray JSON profile.' }, { status: 400 });
+      xrayClientConfig.outbounds.unshift(...xrayClientConfig.outbounds.splice(index, 1));
+    }
+    applyXrayDns(xrayClientConfig, settings.clientDns, workerHost);
     return new Response(JSON.stringify(xrayClientConfig, null, 2), {
       status: 200,
       headers: {
         "Content-Type": "application/json; charset=utf-8",
+        "X-BlueKnight-Xray-Compatibility": "TUN is managed by your client app; h3 DNS endpoints use HTTPS over TCP",
         "Profile-Update-Interval": "24"
       }
     });
@@ -5317,14 +5329,12 @@ async function handleDnsQuery(request, env2) {
           headers: { "Content-Type": "text/plain; charset=utf-8" }
         });
       }
-      const targetUrl = new URL(upstreamUrl);
-      targetUrl.searchParams.set("dns", dnsParam);
-      const upstreamResponse = await (env2.DNS_FETCH || fetch)(targetUrl.toString(), {
+      const upstreamResponse = await fetchDnsWithFallback(upstreamUrl, settings.clientDns.gatewayFallbacks, {
         method: "GET",
         headers: {
           Accept: "application/dns-message"
         }
-      });
+      }, env2.DNS_FETCH || fetch, dnsParam);
       const responseHeaders = new Headers(upstreamResponse.headers);
       responseHeaders.set("Access-Control-Allow-Origin", "*");
       responseHeaders.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -5343,14 +5353,14 @@ async function handleDnsQuery(request, env2) {
         });
       }
       const body = await request.arrayBuffer();
-      const upstreamResponse = await (env2.DNS_FETCH || fetch)(upstreamUrl, {
+      const upstreamResponse = await fetchDnsWithFallback(upstreamUrl, settings.clientDns.gatewayFallbacks, {
         method: "POST",
         headers: {
           "Content-Type": "application/dns-message",
           Accept: "application/dns-message"
         },
         body
-      });
+      }, env2.DNS_FETCH || fetch);
       const responseHeaders = new Headers(upstreamResponse.headers);
       responseHeaders.set("Access-Control-Allow-Origin", "*");
       responseHeaders.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -5392,7 +5402,7 @@ async function handleDnsJson(request, env2) {
     });
   }
   try {
-    const data = await queryDnsJson(upstreamUrl, name, type, env2.DNS_FETCH || fetch);
+    const data = await queryDnsJson(upstreamUrl, name, type, (endpoint, init) => fetchDnsWithFallback(endpoint, settings.clientDns.gatewayFallbacks, init, env2.DNS_FETCH || fetch));
     return new Response(JSON.stringify(data, null, 2), {
       status: 200,
       headers: {
@@ -5454,6 +5464,8 @@ async function handleNodeExport(request, env2) {
       proxyPath: settings.proxyPath,
       proxyIp: settings.proxyIp,
       dnsDoH: settings.dnsDoH,
+      dnsCustom: settings.dnsCustom,
+      clientDns: settings.clientDns,
       allowLANConnection: settings.allowLANConnection,
       fragmentEnabled: settings.fragmentEnabled,
       fragmentPackets: settings.fragmentPackets,
@@ -5552,7 +5564,13 @@ async function handleNodeImport(request, env2) {
       queueWrite(KV_KEYS.proxyIp, importData.proxyIp, currentSettings.proxyIp, "proxyIp");
     }
     if (typeof importData.dnsDoH === "string") {
-      queueWrite(KV_KEYS.dnsDoH, importData.dnsDoH, currentSettings.dnsDoH, "dnsDoH");
+      queueWrite(KV_KEYS.dnsDoH, validateDoh(importData.dnsDoH.trim()), currentSettings.dnsDoH, "dnsDoH");
+    }
+    if (importData.clientDns !== void 0) {
+      queueWrite(KV_KEYS.clientDnsSettings, JSON.stringify(normalizeDns(importData.clientDns)), JSON.stringify(currentSettings.clientDns), "clientDns");
+    }
+    if (typeof importData.dnsCustom === "string") {
+      queueWrite(KV_KEYS.dnsCustom, validateDoh(importData.dnsCustom.trim()), currentSettings.dnsCustom, "dnsCustom");
     }
     if (importData.allowLANConnection !== void 0) {
       queueWrite(KV_KEYS.allowLANConnection, String(importData.allowLANConnection), currentSettings.allowLANConnection, "allowLANConnection");
@@ -6649,7 +6667,8 @@ var init_worker = __esm({
       ssPassword: "config:ss_password",
       ssMethod: "config:ss_method",
       // Custom DNS
-      dnsCustom: "config:dns_custom"
+      dnsCustom: "config:dns_custom",
+      clientDnsSettings: "config:client_dns"
     };
     __name(generateRandomToken, "generateRandomToken");
     __name2(generateRandomToken, "generateRandomToken");

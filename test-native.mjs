@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
 import https from 'node:https';
+import tls from 'node:tls';
 import { spawn } from 'node:child_process';
 import { generateNative } from './deploy-native.mjs';
 
@@ -25,9 +26,15 @@ async function stop(child) {
 }
 const echo = net.createServer(s => { connections.add(s); s.on('error', () => {}); s.on('close', () => connections.delete(s)); s.pipe(s); });
 const handshake = https.createServer({ cert: await fs.readFile(process.env.TEST_TLS_CERT), key: await fs.readFile(process.env.TEST_TLS_KEY), minVersion: 'TLSv1.3' }, (req, res) => res.end('ok'));
+const tunnelTls = tls.createServer({ cert: await fs.readFile(process.env.TEST_TLS_CERT), key: await fs.readFile(process.env.TEST_TLS_KEY) }, socket => {
+  const remote = net.connect(18675, '127.0.0.1');
+  for (const s of [socket, remote]) { connections.add(s); s.on('error', () => { socket.destroy(); remote.destroy(); }); s.on('close', () => connections.delete(s)); }
+  socket.pipe(remote); remote.pipe(socket);
+});
 handshake.on('connection', s => { connections.add(s); s.on('close', () => connections.delete(s)); });
 await new Promise(resolve => echo.listen(0, '127.0.0.1', resolve));
 await new Promise(resolve => handshake.listen(0, '127.0.0.1', resolve));
+await new Promise(resolve => tunnelTls.listen(0, '127.0.0.1', resolve));
 async function tunnelEcho(clientPort) {
   const socket = net.createConnection({ host: '127.0.0.1', port: clientPort });
   connections.add(socket);
@@ -154,6 +161,25 @@ try {
       console.log(`  ${method}: exported Xray SS/WebSocket -> panel -> TCP echo: ok`);
       await stop(xrayClient);
     }
+    if (process.env.MIHOMO_BIN) {
+      const yaml = await (await fetch('http://127.0.0.1:18675/sub/clash?token=native-test-token')).text();
+      const local = yaml.replace(/^port: 7890/m, 'port: 0').replace(/^socks-port: 7891/m, 'socks-port: 18676\nexternal-controller: 127.0.0.1:18677')
+        .replace(/    port: 443/g, `    port: ${tunnelTls.address().port}`)
+        // Only the local fixture uses a self-signed certificate. Trojan in
+        // Mihomo always uses TLS, so provide a real TLS terminator here.
+        .replace(/^(\s*)tls: true$/gm, '$1tls: true\n$1skip-cert-verify: true')
+        .replace(/type: url-test/g, 'type: select').replace(/^    url:.*\r?\n/gm, '').replace(/^    interval:.*\r?\n/gm, '');
+      const mihomoFile = path.join(temp, 'mihomo.yaml'); await fs.writeFile(mihomoFile, local);
+      const client = spawn(process.env.MIHOMO_BIN, ['-d', temp, '-f', mihomoFile], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      children.push(client); client.stdout.on('data', d => logs.push(d.toString())); client.stderr.on('data', d => logs.push(d.toString()));
+      await delay(700); assert.equal(client.exitCode, null, 'Mihomo exported configuration starts');
+      for (const name of method === 'aes-128-gcm' ? ['BlueKnight-VLESS-443', 'BlueKnight-Trojan-443', 'BlueKnight-SS-443'] : ['BlueKnight-SS-443']) {
+        const selection = await fetch('http://127.0.0.1:18677/proxies/PROXY', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
+        assert.equal(selection.status, 204); await tunnelEcho(18676);
+        console.log(`  ${method} ${name}: exported Mihomo -> panel -> TCP echo: ok`);
+      }
+      await stop(client);
+    }
     await stop(panel);
   }
 } catch (err) {
@@ -161,6 +187,6 @@ try {
 } finally {
   for (const child of children) await stop(child);
   for (const socket of connections) socket.destroy();
-  await Promise.all([new Promise(r => echo.close(r)), new Promise(r => handshake.close(r))]);
+  await Promise.all([new Promise(r => echo.close(r)), new Promise(r => handshake.close(r)), new Promise(r => tunnelTls.close(r))]);
   await fs.rm(temp, { recursive: true, force: true });
 }

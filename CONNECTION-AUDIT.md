@@ -1,5 +1,7 @@
 # Connection and deployment audit
 
+2026-09-13 Workers update: deployed the DNS/Xray changes using `wrangler.workers.toml`, with `--keep-vars` and the existing BK_KV binding. Cloudflare version `a3a681ff-a2ad-4ae1-8f8c-6fdbb35ce66a`, tag `dns-xray-update`. The Workers dry run passed (93.18 KiB gzip); upload and trigger deployment succeeded. Live `/api/health` returned HTTP 200 and healthy; `/panel/login` returned HTTP 200 with its login form; `/panel?tab=dns` correctly redirected an unauthenticated visitor to login. Existing settings were preserved. This update did not deploy Pages. Authenticated production subscriptions, client traffic and Gemini access remain for live client testing. The preceding local checks passed all regression suites, standalone bundling, 41 core config checks, real FakeDNS tests and VLESS/Trojan/SS relay tests in Xray, Sing-box and Mihomo.
+
 Date: 2026-09-09. Local runtime: Windows, Node 24.19.0; native validation: official sing-box 1.14.0 release with verified SHA-256 release digest.
 
 ## Verified

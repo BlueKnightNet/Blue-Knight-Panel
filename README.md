@@ -244,7 +244,7 @@ Still stuck? Ask on **[@BlueKnight_Net](https://t.me/BlueKnight_Net)**.
 - **Keep it behind HTTPS.** Cloudflare and the managed hosts do this for you; a
   bare VPS does not.
 
-Your password is stored hashed (PBKDF2-SHA256, 210,000 iterations, salted per
+Your password is stored hashed (PBKDF2-SHA256, 100,000 iterations, salted per
 record) — never in the clear. Coming from an older release, it migrates itself
 the first time you log in.
 
@@ -269,3 +269,6 @@ MIT
 <div align="center">
 <sub>Built for people who need the open internet. · <a href="https://t.me/BlueKnight_Net">@BlueKnight_Net</a></sub>
 </div>
+## DNS and regional-access controls
+
+The DNS tab includes Fake IP, multiple resolver transports, DNS routing, domain policies and gateway fallbacks for full Mihomo, Sing-box and Xray JSON profiles, plus TUN settings for Mihomo/Sing-box. See [DNS and regional-access tools](docs/DNS-AND-REGION.md) for setup, client compatibility and verification limits.

@@ -746,7 +746,7 @@ async function main() {
   }
   ok('Project files present.');
 
-  for (const file of ['test.mjs', 'test-edge.mjs', 'test-proxy.mjs', 'test-connections.mjs', 'test-adapters.mjs', 'test-dns.mjs']) {
+  for (const file of ['test.mjs', 'test-edge.mjs', 'test-proxy.mjs', 'test-connections.mjs', 'test-adapters.mjs', 'test-dns.mjs', 'test-client-dns.mjs', 'test-xray-dns.mjs', 'test-password.mjs']) {
     const test = spawnSync(process.execPath, [file], { encoding: 'utf8', timeout: 30000, windowsHide: true });
     if ((test.status ?? 1) !== 0) {
       fail(`Self-check ${file} failed; deployment stopped:`);
@@ -754,7 +754,7 @@ async function main() {
       return 1;
     }
   }
-  ok('All six local check suites passed.');
+  ok('All nine local check suites passed.');
   if (process.argv.includes('--check')) { ok('Validation complete. Nothing was deployed.'); return 0; }
 
   let key;
