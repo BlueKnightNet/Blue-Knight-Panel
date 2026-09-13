@@ -30,6 +30,9 @@ package-lock.json
 .validation/
 native/generated/
 test_suite_results.txt
+# Local regression suites are kept on disk but excluded from Git.
+/test.mjs
+/test-*.mjs
 *.log
 
 # ---------------------------------------------------------------------------

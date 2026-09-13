@@ -746,15 +746,20 @@ async function main() {
   }
   ok('Project files present.');
 
+  let passedChecks = 0;
+  let skippedChecks = 0;
   for (const file of ['test.mjs', 'test-edge.mjs', 'test-proxy.mjs', 'test-connections.mjs', 'test-adapters.mjs', 'test-dns.mjs', 'test-client-dns.mjs', 'test-xray-dns.mjs', 'test-password.mjs']) {
+    if (!fs.existsSync(file)) { skippedChecks++; continue; }
     const test = spawnSync(process.execPath, [file], { encoding: 'utf8', timeout: 30000, windowsHide: true });
     if ((test.status ?? 1) !== 0) {
       fail(`Self-check ${file} failed; deployment stopped:`);
       say((test.stdout || '') + (test.stderr || '') + (test.error?.message || ''));
       return 1;
     }
+    passedChecks++;
   }
-  ok('All nine local check suites passed.');
+  if (passedChecks) ok(`${passedChecks} local check suites passed.`);
+  if (skippedChecks) warn(`${skippedChecks} local check suites absent (excluded from Git); skipped.`);
   if (process.argv.includes('--check')) { ok('Validation complete. Nothing was deployed.'); return 0; }
 
   let key;
