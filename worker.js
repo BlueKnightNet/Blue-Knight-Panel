@@ -2672,7 +2672,7 @@ function renderDashboardPage(options) {
               <input type="password" class="form-control" name="ssPassword" value="${settings.ssPassword.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}" />
             </div>
             <div class="card">
-              <div class="card-title"><span>Native protocol servers</span></div>
+              <div class="card-title">Native protocol servers</div>
               <p class="card-desc">Shadowsocks, ShadowTLS, AnyTLS, Hysteria2, TUIC and OpenVPN use the native deployment. Manage their credentials in that deployment and download client profiles from Subscriptions.</p>
               <a class="btn btn-secondary" href="/panel/settings/subscriptions">Open native subscriptions</a>
             </div>
