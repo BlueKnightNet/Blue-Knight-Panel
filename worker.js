@@ -30,7 +30,7 @@ import net from "node:net";
 import tls from "node:tls";
 import { Readable, Writable } from "node:stream";
 function connect(address, options = {}) {
-  let hostname, port, secure = false;
+  let hostname, port, secure = options.secureTransport === "on";
   if (typeof address === "string") {
     const parts = address.split(":");
     hostname = parts[0];
@@ -38,7 +38,7 @@ function connect(address, options = {}) {
   } else if (typeof address === "object" && address !== null) {
     hostname = address.hostname || address.host || "127.0.0.1";
     port = typeof address.port === "number" ? address.port : parseInt(address.port || "80", 10);
-    secure = Boolean(address.secureTransport === "on" || address.secureTransport === "starttls");
+    secure ||= address.secureTransport === "on" || address.secureTransport === "starttls";
   } else {
     throw new Error("Invalid address argument for connect()");
   }
@@ -2893,7 +2893,7 @@ function renderDashboardPage(options) {
                 </div>
                 <div>
                   <label class="form-label" style="font-size: 11px;">Upstream Address</label>
-                  <input type="text" name="chainAddress" class="form-control code-input" value="${settings.chainAddress}" placeholder="proxy.example.com" />
+                  <input type="text" name="chainAddress" class="form-control code-input" value="${escapeHtml(settings.chainAddress)}" placeholder="proxy.example.com" />
                 </div>
                 <div>
                   <label class="form-label" style="font-size: 11px;">Port</label>
@@ -2904,27 +2904,17 @@ function renderDashboardPage(options) {
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px;">
                 <div>
                   <label class="form-label" style="font-size: 11px;">Auth (Optional)</label>
-                  <input type="text" name="chainAuth" class="form-control code-input" value="${settings.chainAuth}" placeholder="user:pass / UUID" />
+                  <input type="text" name="chainAuth" class="form-control code-input" value="${escapeHtml(settings.chainAuth)}" placeholder="user:pass" />
                 </div>
                 <div>
                   <label class="form-label" style="font-size: 11px;">Security</label>
                   <select name="chainSecurity" class="form-control code-input">
                     <option value="none" ${settings.chainSecurity === "none" ? "selected" : ""}>None</option>
-                    <option value="tls" ${settings.chainSecurity === "tls" ? "selected" : ""}>TLS</option>
+                    <option value="tls" ${settings.chainSecurity === "tls" ? "selected" : ""}>TLS (HTTPS proxy / SOCKS over TLS)</option>
                   </select>
                 </div>
               </div>
-
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-                <div>
-                  <label class="form-label" style="font-size: 11px;">Path</label>
-                  <input type="text" name="chainPath" class="form-control code-input" value="${settings.chainPath}" placeholder="/path or empty" />
-                </div>
-                <div>
-                  <label class="form-label" style="font-size: 11px;">SNI</label>
-                  <input type="text" name="chainSni" class="form-control code-input" value="${settings.chainSni}" placeholder="sni.example.com" />
-                </div>
-              </div>
+              <p class="card-desc" style="margin: 0;">Saving with the chain enabled runs a live test through the upstream and reports the result. While enabled, proxy traffic never falls back to a direct connection.</p>
             </div>
 
           </div>
@@ -3532,6 +3522,7 @@ async function handlePanel(request, env2) {
         const formData = await request.formData();
         const currentSettings = await getOrInitSettings(env2);
         const updates = [];
+        let chainSubmitted = false;
         if (formData.has("clientDnsSettings")) {
           initialTab = "dns";
           const value = JSON.stringify(dnsFromForm(formData));
@@ -3684,16 +3675,23 @@ async function handlePanel(request, env2) {
           initialTab = "routing";
           const chainVal = formData.get("chainEnabled");
           const chainEnabled = chainVal === "on" || chainVal === "true" ? "true" : "false";
+          const chainType = String(formData.get("chainType") || "socks").trim();
+          const chainAddress = String(formData.get("chainAddress") || "").trim();
+          const chainPort = String(formData.get("chainPort") || "1080").trim();
+          const chainAuth = String(formData.get("chainAuth") || "").trim();
+          if (chainEnabled === "true") {
+            if (!["socks", "http"].includes(chainType)) throw new Error("Chain type must be SOCKS5 or HTTP.");
+            if (!/^(\[[0-9a-fA-F:.]+\]|[^\s/:\[\]]+)$/.test(chainAddress)) throw new Error("Chain address must be a hostname or IP with no scheme, path or port.");
+            if (!/^\d+$/.test(chainPort) || +chainPort < 1 || +chainPort > 65535) throw new Error("Chain port must be 1-65535.");
+            if (chainType === "socks" && chainAuth && !/^[^:]+:.+$/.test(chainAuth)) throw new Error("SOCKS5 auth must be user:password.");
+          }
+          chainSubmitted = true;
           checkBool(KV_KEYS.chainEnabled, chainEnabled, String(currentSettings.chainEnabled));
-          check(KV_KEYS.chainType, "chainType", String(formData.get("chainType") || "socks").trim(), currentSettings.chainType);
-          check(KV_KEYS.chainAddress, "chainAddress", String(formData.get("chainAddress") || "").trim(), currentSettings.chainAddress);
-          check(KV_KEYS.chainPort, "chainPort", String(formData.get("chainPort") || "1080").trim(), String(currentSettings.chainPort));
-          check(KV_KEYS.chainAuth, "chainAuth", String(formData.get("chainAuth") || "").trim(), currentSettings.chainAuth);
-          check(KV_KEYS.chainPath, "chainPath", String(formData.get("chainPath") || "").trim(), currentSettings.chainPath);
+          check(KV_KEYS.chainType, "chainType", chainType, currentSettings.chainType);
+          check(KV_KEYS.chainAddress, "chainAddress", chainAddress, currentSettings.chainAddress);
+          check(KV_KEYS.chainPort, "chainPort", chainPort, String(currentSettings.chainPort));
+          check(KV_KEYS.chainAuth, "chainAuth", chainAuth, currentSettings.chainAuth);
           check(KV_KEYS.chainSecurity, "chainSecurity", String(formData.get("chainSecurity") || "none").trim(), currentSettings.chainSecurity);
-          check(KV_KEYS.chainTransport, "chainTransport", String(formData.get("chainTransport") || "tcp").trim(), currentSettings.chainTransport);
-          check(KV_KEYS.chainSni, "chainSni", String(formData.get("chainSni") || "").trim(), currentSettings.chainSni);
-          check(KV_KEYS.chainHost, "chainHost", String(formData.get("chainHost") || "").trim(), currentSettings.chainHost);
         }
         if (updates.length === 0) {
           flashMessage = { type: "success", text: "No settings were modified \u2014 0 KV writes consumed. \u2728" };
@@ -3709,6 +3707,13 @@ async function handlePanel(request, env2) {
           invalidateSettingsCache();
           settings = await getOrInitSettings(env2);
           flashMessage = { type: "success", text: `Saved ${updates.length} updated setting(s) to KV! \u2728` };
+        }
+        const liveSettings = await getOrInitSettings(env2);
+        if (chainSubmitted && liveSettings.chainEnabled) {
+          const result = await testChain(liveSettings);
+          flashMessage = result.ok
+            ? { type: "success", text: `${flashMessage.text} Chain test passed: ${result.message}. Open connections keep their old route; new ones use the chain within about a minute.` }
+            : { type: "error", text: `${flashMessage.text} Chain test FAILED: ${result.message}. Proxy traffic will fail until the upstream works or the chain is disabled.` };
         }
       } catch (err) {
         flashMessage = { type: "error", text: err.message || "Failed to save protocol settings." };
@@ -5065,7 +5070,7 @@ async function dialHttpChain(remoteSocket, targetHost, targetPort, chainAuth) {
   const input = chainReader(remoteSocket);
   try {
     const authority = `${targetHost.includes(":") ? `[${targetHost}]` : targetHost}:${targetPort}`;
-    const auth = chainAuth ? `Proxy-Authorization: Basic ${btoa(chainAuth)}\r\n` : "";
+    const auth = chainAuth ? `Proxy-Authorization: Basic ${btoa(String.fromCharCode(...new TextEncoder().encode(chainAuth)))}\r\n` : "";
     await writer.write(new TextEncoder().encode(
       `CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n${auth}\r\n`));
     let header = "";
@@ -5079,6 +5084,19 @@ async function dialHttpChain(remoteSocket, targetHost, targetPort, chainAuth) {
   } finally {
     writer.releaseLock(); input.release();
   }
+}
+// IP literals use their own SOCKS5 address types; some upstreams reject IPs sent as domains.
+function socks5Address(host) {
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return [1, ...host.split(".").map(Number)];
+  if (host.includes(":")) {
+    const split = (s) => s ? s.split(":") : [];
+    const [head, tail] = host.includes("::") ? host.split("::").map(split) : [split(host), []];
+    const groups = [...head, ...Array(8 - head.length - tail.length).fill("0"), ...tail];
+    return [4, ...groups.flatMap((g) => { const n = parseInt(g, 16); return [n >> 8, n & 255]; })];
+  }
+  const domain = new TextEncoder().encode(host);
+  if (!domain.length || domain.length > 255) throw new Error("Invalid SOCKS5 target length");
+  return [3, domain.length, ...domain];
 }
 async function dialSocks5Chain(remoteSocket, targetHost, targetPort, chainAuth) {
   const writer = remoteSocket.writable.getWriter();
@@ -5101,9 +5119,7 @@ async function dialSocks5Chain(remoteSocket, targetHost, targetPort, chainAuth) 
       const auth = await input.read(2);
       if (auth[0] !== 1 || auth[1] !== 0) throw new Error("SOCKS5 credentials rejected");
     }
-    const domain = new TextEncoder().encode(targetHost);
-    if (!domain.length || domain.length > 255) throw new Error("Invalid SOCKS5 target length");
-    await writer.write(new Uint8Array([5, 1, 0, 3, domain.length, ...domain,
+    await writer.write(new Uint8Array([5, 1, 0, ...socks5Address(targetHost),
       targetPort >> 8 & 255, targetPort & 255]));
     const reply = await input.read(4);
     if (reply[0] !== 5 || reply[1] !== 0 || reply[2] !== 0) {
@@ -5119,8 +5135,8 @@ async function dialSocks5Chain(remoteSocket, targetHost, targetPort, chainAuth) 
 }
 async function establishOutboundSocket(targetHost, targetPort, settings, viaRelay = false) {
   const nativeConnect = await getConnect();
-  const connect2 = (address) => {
-    const socket = nativeConnect(address);
+  const connect2 = (address, options) => {
+    const socket = nativeConnect(address, options);
     return { readable: socket.readable, writable: socket.writable,
       opened: socket.opened, closed: socket.closed, close: () => socket.close() };
   };
@@ -5129,27 +5145,13 @@ async function establishOutboundSocket(targetHost, targetPort, settings, viaRela
     throw new Error("Configure a valid HTTP or SOCKS5 upstream; unsupported chains cannot fall back to a direct connection");
   }
   if (settings.chainEnabled && settings.chainAddress && settings.chainPort > 0) {
-    const chainHost = settings.chainAddress.replace(/^\[|\]$/g, "");
-    if (settings.chainType === "http") {
-      const socket2 = connect2({
-        hostname: chainHost,
-        port: settings.chainPort
-      });
+    const socket2 = connect2({ hostname: settings.chainAddress.replace(/^\[|\]$/g, ""), port: settings.chainPort },
+      settings.chainSecurity === "tls" ? { secureTransport: "on" } : undefined);
+    try {
       await socket2.opened;
-      try { await dialHttpChain(socket2, cleanHost, targetPort, settings.chainAuth); }
-      catch (err) { socket2.close(); throw err; }
-      return socket2;
-    }
-    if (settings.chainType === "socks") {
-      const socket2 = connect2({
-        hostname: chainHost,
-        port: settings.chainPort
-      });
-      await socket2.opened;
-      try { await dialSocks5Chain(socket2, cleanHost, targetPort, settings.chainAuth); }
-      catch (err) { socket2.close(); throw err; }
-      return socket2;
-    }
+      await (settings.chainType === "http" ? dialHttpChain : dialSocks5Chain)(socket2, cleanHost, targetPort, settings.chainAuth);
+    } catch (err) { socket2.close(); throw err; }
+    return socket2;
   }
   if (viaRelay) {
     const relay = parseHostPort(settings.relayIp, targetPort);
@@ -5163,6 +5165,31 @@ async function establishOutboundSocket(targetHost, targetPort, settings, viaRela
   });
   await socket.opened;
   return socket;
+}
+// Fetches a plain-HTTP page through the configured chain so a save proves the exit works.
+async function testChain(settings, host = "example.com", port = 80) {
+  const started = Date.now();
+  let socket, timer;
+  const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("timed out after 8s")), 8000); });
+  try {
+    return await Promise.race([timeout, (async () => {
+      socket = await establishOutboundSocket(host, port, settings);
+      const writer = socket.writable.getWriter();
+      await writer.write(new TextEncoder().encode(`HEAD / HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n\r\n`));
+      writer.releaseLock();
+      const reader = socket.readable.getReader();
+      const { value } = await reader.read();
+      reader.releaseLock();
+      const status = new TextDecoder().decode(value || new Uint8Array()).split("\r\n")[0];
+      if (!/^HTTP\/1\.[01] \d{3}/.test(status)) throw new Error(`unexpected reply from ${host} via upstream`);
+      return { ok: true, message: `${host} answered "${status}" via ${settings.chainType.toUpperCase()} ${settings.chainAddress}:${settings.chainPort} in ${Date.now() - started} ms` };
+    })()]);
+  } catch (err) {
+    return { ok: false, message: err?.message || String(err) };
+  } finally {
+    clearTimeout(timer);
+    try { socket?.close(); } catch {}
+  }
 }
 function parseHostPort(value, defaultPort) {
   const m = String(value).trim().match(/^\[([^\]]+)\](?::(\d+))?$|^([^:]+)(?::(\d+))?$/);
