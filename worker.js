@@ -6633,7 +6633,7 @@ var init_worker = __esm({
     APP_CONFIG = {
       name: "BlueKnight Panel",
       tagline: "Ethereal Pastel Encrypted DNS & Multi-Protocol Proxy",
-      version: "5.2.1",
+      version: "5.2.2",
       // bk_* is the BlueKnight cookie; wd_session is still accepted so sessions
       // issued before the rename keep working until they expire.
       cookieName: "bk_session",

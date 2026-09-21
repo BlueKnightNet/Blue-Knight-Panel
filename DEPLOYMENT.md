@@ -63,7 +63,7 @@ node deploy.mjs cloudflare-pages --project=your-project --branch=your-branch --y
 
 The helper downloads the project's existing configuration into an isolated staging directory, preserves its KV bindings, copies the current Worker/Functions/static assets, and publishes to the selected branch. It does not replace your panel password, subscription token, UUID, or existing KV namespace. The root Workers configuration is unchanged. Cloudflare authentication through Wrangler is required.
 
-After publishing, check `https://your-project.pages.dev/api/health` for version `5.2.1`, then refresh the panel. Use Ctrl+F5 if an old page is still displayed. The updated Subscriptions section includes native connection downloads, and the Protocols section explains which connections require a native server. OpenVPN and ShadowTLS do not run inside Pages: those downloads need a separately provisioned native deployment.
+After publishing, check `https://your-project.pages.dev/api/health` for version `5.2.2`, then refresh the panel. Use Ctrl+F5 if an old page is still displayed. The updated Subscriptions section includes native connection downloads, and the Protocols section explains which connections require a native server. OpenVPN and ShadowTLS do not run inside Pages: those downloads need a separately provisioned native deployment.
 
 Latest upload: 2026-09-09, deployment `f50ebbf4-d997-4cfa-ab31-d051a0d83a2f`, confirmed as production by Wrangler. All six predeployment suites passed. Live HTTP/UI verification was blocked by this workstation's DNS/network failures; see [the audit](CONNECTION-AUDIT.md) for the exact validation scope.
 
