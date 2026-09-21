@@ -292,6 +292,22 @@ async function panelSecrets() {
   return { password, jwt };
 }
 
+/**
+ * Workers and Pages cannot open sockets to Cloudflare IPs, so sites behind
+ * Cloudflare's CDN need a non-Cloudflare relay. Stored as the RELAY_IP secret;
+ * a value saved in the panel takes precedence. Blank keeps the current one.
+ */
+async function relayAddress() {
+  const value = (flagValue('relay') || process.env.RELAY_IP ||
+    await ask('Relay for Cloudflare-hosted sites, host or host:port (blank = skip): ')).trim();
+  if (value && !/^(\[[0-9a-f:]+\]|[a-z0-9.-]+|[0-9a-f:]+)(:\d{1,5})?$/i.test(value)) {
+    warn(`Ignoring relay "${value}": expected host, host:port or [ipv6]:port.`);
+    return '';
+  }
+  if (!value) warn('No relay given; keeping the current one. Sites behind Cloudflare CDN need one (panel → Network).');
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // Providers
 // ---------------------------------------------------------------------------
@@ -336,6 +352,11 @@ const providers = {
         if (status === 0) ok(`secret ${key} set.`);
         else warn(`Could not set ${key} yet (normal before the first deploy) — rerun after deploying.`);
       }
+      const relay = await relayAddress();
+      if (relay) {
+        if (feed(cmd, [...pre, 'secret', 'put', 'RELAY_IP'], relay + '\n') === 0) ok(`secret RELAY_IP set to ${relay}.`);
+        else warn('Could not set RELAY_IP yet (normal before the first deploy) — rerun after deploying.');
+      }
 
       step('Deploy');
       if (run(cmd, [...pre, 'deploy']) !== 0) return 1;
@@ -375,6 +396,11 @@ const providers = {
       config = config.replace(/^pages_build_output_dir\s*=.*$/m, 'pages_build_output_dir = "public"');
       config = config.replace(/^compatibility_date\s*=.*$/m, `compatibility_date = "${PAGES_COMPAT_DATE}"`);
       fs.writeFileSync(configPath, config, 'utf8');
+      const relay = await relayAddress();
+      if (relay) {
+        if (feed(cmd, [...pre, 'pages', 'secret', 'put', 'RELAY_IP', '--project-name', project], relay + '\n') === 0) ok(`secret RELAY_IP set to ${relay}.`);
+        else warn('Could not set RELAY_IP on the Pages project; set it in the panel instead.');
+      }
       step(`Publish ${project} on production branch ${branch}`);
       if (run(cmd, [...pre, 'pages', 'deploy', 'public', '--project-name', project,
         '--commit-dirty=true', '--branch', branch, '--cwd', staging]) !== 0) return 1;

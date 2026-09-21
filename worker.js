@@ -384,7 +384,8 @@ async function getOrInitSettings(env2) {
     trojanPassword: trojanPassword.trim(),
     proxyPath: effectiveProxyPath,
     proxyIp: proxyIp ? proxyIp.trim() : "",
-    relayIp: relayIp ? relayIp.trim() : "",
+    // Panel value wins; RELAY_IP is what deploy.mjs sets on Workers/Pages.
+    relayIp: relayIp && relayIp.trim() ? relayIp.trim() : String(env2.RELAY_IP || "").trim(),
     subToken: subToken.trim(),
     dnsDoH: effectiveDnsDoH,
     allowLANConnection: allowLANConnectionStr === "true",

@@ -5,6 +5,8 @@ rem
 rem  Double-click from Explorer or a Desktop shortcut to get the interactive
 rem  picker. Passes any arguments straight through, so a shortcut can pin one
 rem  target:  BlueKnight-Deploy.cmd cloudflare
+rem  Relay:    BlueKnight-Deploy.cmd cloudflare --relay=proxyip.example.com
+rem            (lets sites behind Cloudflare CDN open; also asked interactively)
 rem  Validate: BlueKnight-Deploy.cmd --check
 rem  Native:   BlueKnight-Deploy.cmd native --host=vpn.example.com --prepare-only
 rem  Pass arguments for unattended use; only the double-click menu pauses.
