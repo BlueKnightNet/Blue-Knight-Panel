@@ -153,6 +153,7 @@ async function getOrInitSettings(env2) {
   let trojanPassword = null;
   let proxyPath = null;
   let proxyIp = null;
+  let relayIp = null;
   let subToken = null;
   let dnsDoH = null;
   let allowLANConnectionStr = null;
@@ -215,6 +216,7 @@ async function getOrInitSettings(env2) {
         trojanPassword,
         proxyPath,
         proxyIp,
+        relayIp,
         subToken,
         dnsDoH,
         allowLANConnectionStr,
@@ -275,6 +277,7 @@ async function getOrInitSettings(env2) {
         kv.get(KV_KEYS.trojanPassword),
         kv.get(KV_KEYS.proxyPath),
         kv.get(KV_KEYS.proxyIp),
+        kv.get(KV_KEYS.relayIp),
         kv.get(KV_KEYS.subToken),
         kv.get(KV_KEYS.dnsDoH),
         kv.get(KV_KEYS.allowLANConnection),
@@ -381,6 +384,7 @@ async function getOrInitSettings(env2) {
     trojanPassword: trojanPassword.trim(),
     proxyPath: effectiveProxyPath,
     proxyIp: proxyIp ? proxyIp.trim() : "",
+    relayIp: relayIp ? relayIp.trim() : "",
     subToken: subToken.trim(),
     dnsDoH: effectiveDnsDoH,
     allowLANConnection: allowLANConnectionStr === "true",
@@ -2590,6 +2594,12 @@ function renderDashboardPage(options) {
               </div>
 
               <div class="form-group">
+                <label class="form-label" for="relayIp">Relay for Cloudflare-hosted Sites (ProxyIP)</label>
+                <input type="text" id="relayIp" name="relayIp" class="form-control code-input" value="${escapeHtml(settings.relayIp)}" placeholder="e.g. proxyip.example.com or 1.2.3.4:443" />
+                <p class="card-desc" style="margin: 6px 0 0;">Workers cannot open sockets to Cloudflare IPs, so sites behind Cloudflare CDN fail on a direct dial. When that happens the Worker retries through this non-Cloudflare relay. Port defaults to the target port. Ignored while an upstream chain is enabled.</p>
+              </div>
+
+              <div class="form-group">
                 <label class="form-label" for="dnsDoH">Underlying DoH Upstream URL</label>
                 <input type="text" id="dnsDoH" name="dnsDoH" class="form-control code-input" value="${settings.dnsDoH}" placeholder="https://cloudflare-dns.com/dns-query" />
               </div>
@@ -3571,6 +3581,10 @@ async function handlePanel(request, env2) {
           initialTab = "protocols";
           check(KV_KEYS.proxyIp, "proxyIp", String(formData.get("proxyIp") || "").trim(), currentSettings.proxyIp);
         }
+        if (formData.has("relayIp")) {
+          initialTab = "protocols";
+          check(KV_KEYS.relayIp, "relayIp", String(formData.get("relayIp") || "").trim(), currentSettings.relayIp);
+        }
         if (formData.has("dnsDoH")) {
           if (!formData.has("vlessUuid")) initialTab = "dns";
           check(KV_KEYS.dnsDoH, "dnsDoH", validateDoh(String(formData.get("dnsDoH") || "").trim()), currentSettings.dnsDoH);
@@ -3955,7 +3969,9 @@ async function handleSubscription(pathname, request, env2) {
       }
     );
   }
-  const serverAddress = settings.proxyIp && settings.proxyIp.trim().length > 0 ? settings.proxyIp.trim() : workerHost;
+  // Clean IP entries may carry a port ("1.2.3.4:2053", "[v6]:8443"); an explicit port pins the node to it.
+  const cleanIp = settings.proxyIp && settings.proxyIp.trim() ? parseHostPort(settings.proxyIp, 0) : null;
+  const serverAddress = cleanIp ? cleanIp.hostname : workerHost;
   const requestedProtocol = pathname.replace(/^\/sub\//, "").toLowerCase();
   const protocol = requestedProtocol === "all" ? "singbox" : requestedProtocol;
   const defaultPorts = request.cf || /\.(pages|workers)\.dev$/.test(workerHost) ? "443,2053,2083,2087,2096,8443" : "443";
@@ -3973,9 +3989,13 @@ async function handleSubscription(pathname, request, env2) {
   const frontSni = settings.frontingSni || "cdnjs.cloudflare.com";
   const frontHost = settings.frontingHost || workerHost;
   // Use the same configured endpoints in every client format. Never truncate IP pools.
-  const nodes = cfPorts.map(port => ({ port, address: serverAddress, host: workerHost, sni: workerHost, suffix: String(port) }));
-  if (isFronting) nodes.push(...cfPorts.slice(0, 2).map(port => ({ port, address: serverAddress, host: frontHost, sni: frontSni, suffix: `Fronting-${port}` })));
-  nodes.push(...[...new Set(staticIps)].map((address, index) => ({ port: 443, address, host: workerHost, sni: workerHost, suffix: `StaticIP-${index + 1}` })));
+  const nodePorts = cleanIp?.port ? [cleanIp.port] : cfPorts;
+  const nodes = nodePorts.map(port => ({ port, address: serverAddress, host: workerHost, sni: workerHost, suffix: String(port) }));
+  if (isFronting) nodes.push(...nodePorts.slice(0, 2).map(port => ({ port, address: serverAddress, host: frontHost, sni: frontSni, suffix: `Fronting-${port}` })));
+  nodes.push(...[...new Set(staticIps)].map((entry, index) => {
+    const { hostname: address, port } = parseHostPort(entry, 443);
+    return { port, address, host: workerHost, sni: workerHost, suffix: `StaticIP-${index + 1}` };
+  }));
   const uriAddress = address => address.includes(":") && !address.startsWith("[") ? `[${address}]` : address;
   const links = type => nodes.map(node => {
     const auth = type === "vless" ? settings.vlessUuid : encodeURIComponent(settings.trojanPassword);
@@ -4980,7 +5000,7 @@ async function handleWebSocketProxy(request, env2, ctx) {
   const ssRequest = new URL(request.url).pathname.endsWith('/ss');
   const ssSettings = ssRequest ? await getOrInitSettings(env2) : null;
   const sessionPromise = (ssRequest
-    ? serveShadowsocks(serverWs, ssSettings, (host, port) => establishOutboundSocket(host, port, ssSettings), earlyData)
+    ? serveShadowsocks(serverWs, ssSettings, Object.assign((host, port, viaRelay) => establishOutboundSocket(host, port, ssSettings, viaRelay), { canRelay: !!ssSettings?.relayIp && !ssSettings?.chainEnabled }), earlyData)
     : handleProxySession(serverWs, env2, earlyData)).catch((err) => {
     console.warn("Proxy session error:", err?.message || err);
     try {
@@ -5096,7 +5116,7 @@ async function dialSocks5Chain(remoteSocket, targetHost, targetPort, chainAuth) 
     writer.releaseLock(); input.release();
   }
 }
-async function establishOutboundSocket(targetHost, targetPort, settings) {
+async function establishOutboundSocket(targetHost, targetPort, settings, viaRelay = false) {
   const nativeConnect = await getConnect();
   const connect2 = (address) => {
     const socket = nativeConnect(address);
@@ -5130,12 +5150,23 @@ async function establishOutboundSocket(targetHost, targetPort, settings) {
       return socket2;
     }
   }
+  if (viaRelay) {
+    const relay = parseHostPort(settings.relayIp, targetPort);
+    const socket2 = connect2(relay);
+    await socket2.opened;
+    return socket2;
+  }
   const socket = connect2({
     hostname: cleanHost,
     port: targetPort
   });
   await socket.opened;
   return socket;
+}
+function parseHostPort(value, defaultPort) {
+  const m = String(value).trim().match(/^\[([^\]]+)\](?::(\d+))?$|^([^:]+)(?::(\d+))?$/);
+  if (!m) return { hostname: String(value).trim().replace(/^\[|\]$/g, ""), port: defaultPort };
+  return { hostname: m[1] || m[3], port: parseInt(m[2] || m[4], 10) || defaultPort };
 }
 async function handleProxySession(ws, env2, earlyData) {
   const settings = await getOrInitSettings(env2);
@@ -5221,25 +5252,41 @@ async function handleProxySession(ws, env2, earlyData) {
         }
       }
       hasHandshaked = true;
-      try {
-        remoteSocket = await establishOutboundSocket(targetHost, targetPort, settings);
-      } catch (sockErr) {
-        console.warn(`Failed to connect to ${targetHost}:${targetPort}:`, sockErr?.message || sockErr);
-        closeAll(1001, "Connection Refused");
-        return;
-      }
-      const writer = remoteSocket.writable.getWriter();
-      socketWriter = writer;
-      if (initialPayload.length > 0) {
+      // Workers refuse sockets to Cloudflare's own IPs, so CDN-fronted sites
+      // either fail to dial or close with zero bytes. Retry once via relayIp.
+      const canRelay = !!settings.relayIp && !settings.chainEnabled;
+      const dial = async (viaRelay) => {
+        if (remoteSocket) {
+          try { socketWriter?.releaseLock(); } catch {}
+          try { remoteSocket.close(); } catch {}
+        }
         try {
-          await writer.write(initialPayload);
-        } catch (writeErr) {
-          console.warn("Failed to write initial payload:", writeErr?.message || writeErr);
-          closeAll(1001, "Socket Write Error");
+          remoteSocket = await establishOutboundSocket(targetHost, targetPort, settings, viaRelay);
+        } catch (sockErr) {
+          if (!viaRelay && canRelay) return dial(true);
+          console.warn(`Failed to connect to ${targetHost}:${targetPort}${viaRelay ? " via relay" : ""}:`, sockErr?.message || sockErr);
+          closeAll(1001, "Connection Refused");
           return;
         }
-      }
-      pipeRemoteToWebSocket(remoteSocket.readable, ws, closeAll);
+        if (isClosed) {
+          try { remoteSocket.close(); } catch {}
+          return;
+        }
+        const writer = remoteSocket.writable.getWriter();
+        socketWriter = writer;
+        if (initialPayload.length > 0) {
+          try {
+            await writer.write(initialPayload);
+          } catch (writeErr) {
+            if (!viaRelay && canRelay) return dial(true);
+            console.warn("Failed to write initial payload:", writeErr?.message || writeErr);
+            closeAll(1001, "Socket Write Error");
+            return;
+          }
+        }
+        pipeRemoteToWebSocket(remoteSocket.readable, ws, closeAll, !viaRelay && canRelay ? () => dial(true) : null);
+      };
+      await dial(false);
     } else {
       if (socketWriter) {
         try {
@@ -5291,14 +5338,16 @@ async function handleProxySession(ws, env2, earlyData) {
     });
   });
 }
-async function pipeRemoteToWebSocket(readable, ws, onClose) {
+async function pipeRemoteToWebSocket(readable, ws, onClose, retryIfEmpty = null) {
   const reader = readable.getReader();
+  let received = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done)
         break;
       if (value && value.length > 0) {
+        received = true;
         try {
           ws.send(value);
         } catch {
@@ -5313,8 +5362,9 @@ async function pipeRemoteToWebSocket(readable, ws, onClose) {
       reader.releaseLock();
     } catch {
     }
-    onClose(1e3, "Remote stream finished");
   }
+  if (!received && retryIfEmpty) return retryIfEmpty();
+  onClose(1e3, "Remote stream finished");
 }
 async function handleDnsQuery(request, env2) {
   const settings = await getOrInitSettings(env2);
@@ -5463,6 +5513,7 @@ async function handleNodeExport(request, env2) {
     settings: {
       proxyPath: settings.proxyPath,
       proxyIp: settings.proxyIp,
+      relayIp: settings.relayIp,
       dnsDoH: settings.dnsDoH,
       dnsCustom: settings.dnsCustom,
       clientDns: settings.clientDns,
@@ -5562,6 +5613,9 @@ async function handleNodeImport(request, env2) {
     }
     if (typeof importData.proxyIp === "string") {
       queueWrite(KV_KEYS.proxyIp, importData.proxyIp, currentSettings.proxyIp, "proxyIp");
+    }
+    if (typeof importData.relayIp === "string") {
+      queueWrite(KV_KEYS.relayIp, importData.relayIp.trim(), currentSettings.relayIp, "relayIp");
     }
     if (typeof importData.dnsDoH === "string") {
       queueWrite(KV_KEYS.dnsDoH, validateDoh(importData.dnsDoH.trim()), currentSettings.dnsDoH, "dnsDoH");
@@ -6604,6 +6658,7 @@ var init_worker = __esm({
       trojanPassword: "config:trojan_password",
       proxyPath: "config:proxy_path",
       proxyIp: "config:proxy_ip",
+      relayIp: "config:relay_ip",
       subToken: "config:sub_token",
       dnsDoH: "config:dns_doh",
       allowLANConnection: "config:allow_lan_connection",
