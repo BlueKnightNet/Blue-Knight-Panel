@@ -36,7 +36,7 @@ function connect(address, options = {}) {
     hostname = parts[0];
     port = parseInt(parts[1] || "80", 10);
   } else if (typeof address === "object" && address !== null) {
-    hostname = address.hostname || address.host || "127.0.0.1";
+    hostname = String(address.hostname || address.host || "127.0.0.1").replace(/^\[|\]$/g, "");
     port = typeof address.port === "number" ? address.port : parseInt(address.port || "80", 10);
     secure ||= address.secureTransport === "on" || address.secureTransport === "starttls";
   } else {
@@ -154,6 +154,7 @@ async function getOrInitSettings(env2) {
   let proxyPath = null;
   let proxyIp = null;
   let relayIp = null;
+  let nat64Str = null;
   let subToken = null;
   let dnsDoH = null;
   let allowLANConnectionStr = null;
@@ -217,6 +218,7 @@ async function getOrInitSettings(env2) {
         proxyPath,
         proxyIp,
         relayIp,
+        nat64Str,
         subToken,
         dnsDoH,
         allowLANConnectionStr,
@@ -278,6 +280,7 @@ async function getOrInitSettings(env2) {
         kv.get(KV_KEYS.proxyPath),
         kv.get(KV_KEYS.proxyIp),
         kv.get(KV_KEYS.relayIp),
+        kv.get(KV_KEYS.nat64Prefixes),
         kv.get(KV_KEYS.subToken),
         kv.get(KV_KEYS.dnsDoH),
         kv.get(KV_KEYS.allowLANConnection),
@@ -373,7 +376,7 @@ async function getOrInitSettings(env2) {
   const effectiveFragmentPackets = fragmentPackets && fragmentPackets.trim().length > 0 ? fragmentPackets.trim() : "tlshello";
   const effectiveFragmentLength = fragmentLength && fragmentLength.trim().length > 0 ? fragmentLength.trim() : "100-200";
   const effectiveFragmentInterval = fragmentInterval && fragmentInterval.trim().length > 0 ? fragmentInterval.trim() : "10-20";
-  const validRoutingPresets = ["off", "bypass-iran", "bypass-cn", "block-ads"];
+  const validRoutingPresets = ["off", ...Object.keys(BYPASS_PRESETS), "block-ads"];
   const routingPreset = routingPresetStr && validRoutingPresets.includes(routingPresetStr) ? routingPresetStr : "off";
   const effectiveWarpPeerKey = warpPeerPublicKey && warpPeerPublicKey.trim().length > 0 ? warpPeerPublicKey.trim() : APP_CONFIG.defaultWarpPeerPublicKey;
   const validChainTypes = ["vless", "trojan", "ss", "socks", "http"];
@@ -386,6 +389,8 @@ async function getOrInitSettings(env2) {
     proxyIp: proxyIp ? proxyIp.trim() : "",
     // Panel value wins; RELAY_IP is what deploy.mjs sets on Workers/Pages.
     relayIp: relayIp && relayIp.trim() ? relayIp.trim() : String(env2.RELAY_IP || "").trim(),
+    // Used when no relay is set: public NAT64 gateways reach Cloudflare IPs over IPv6 (BPB's method).
+    nat64Prefixes: String(nat64Str ?? env2.NAT64_PREFIXES ?? DEFAULT_NAT64_PREFIXES).split(/[\s,]+/).map((p) => p.replace(/^\[|\]$/g, "").replace(/\/96$/, "")).filter((p) => p.endsWith("::")),
     subToken: subToken.trim(),
     dnsDoH: effectiveDnsDoH,
     allowLANConnection: allowLANConnectionStr === "true",
@@ -396,7 +401,8 @@ async function getOrInitSettings(env2) {
     routingPreset,
     warpPrivateKey: warpPrivateKey ? warpPrivateKey.trim() : "",
     warpPeerPublicKey: effectiveWarpPeerKey,
-    warpIPv6: warpIPv6 ? warpIPv6.trim() : "",
+    // WARP registration returns a bare IPv6; sing-box and WireGuard reject it without a prefix.
+    warpIPv6: warpIPv6 && warpIPv6.trim() ? (warpIPv6.includes("/") ? warpIPv6.trim() : `${warpIPv6.trim()}/128`) : "",
     warpReserved: warpReserved ? warpReserved.trim() : "",
     // Warp Pro
     warpProEnabled: warpProEnabledStr === "true",
@@ -2601,6 +2607,12 @@ function renderDashboardPage(options) {
               </div>
 
               <div class="form-group">
+                <label class="form-label" for="nat64Prefixes">NAT64 Prefixes (used when no relay is set)</label>
+                <input type="text" id="nat64Prefixes" name="nat64Prefixes" class="form-control code-input" value="${escapeHtml(settings.nat64Prefixes.join(", "))}" placeholder="${DEFAULT_NAT64_PREFIXES}" />
+                <p class="card-desc" style="margin: 6px 0 0;">With no relay, Cloudflare-hosted sites are reached through a public NAT64 gateway: the site's IPv4 is embedded in one of these IPv6 prefixes. Works out of the box; replace the list if these gateways stop answering. Clear it to disable.</p>
+              </div>
+
+              <div class="form-group">
                 <label class="form-label" for="dnsDoH">Underlying DoH Upstream URL</label>
                 <input type="text" id="dnsDoH" name="dnsDoH" class="form-control code-input" value="${settings.dnsDoH}" placeholder="https://cloudflare-dns.com/dns-query" />
               </div>
@@ -2836,6 +2848,8 @@ function renderDashboardPage(options) {
                 <select id="routingPreset" name="routingPreset" class="form-control">
                   <option value="off" ${settings.routingPreset === "off" ? "selected" : ""}>Off (Default &bull; Route all traffic via Proxy)</option>
                   <option value="bypass-iran" ${settings.routingPreset === "bypass-iran" ? "selected" : ""}>Bypass Iran (GEOIP/Geosite IR &amp; .ir direct)</option>
+                  <option value="bypass-russia" ${settings.routingPreset === "bypass-russia" ? "selected" : ""}>Bypass Russia (GEOIP/Geosite RU &amp; .ru/.su/.рф direct)</option>
+                  <option value="bypass-iran-russia" ${settings.routingPreset === "bypass-iran-russia" ? "selected" : ""}>Bypass Iran + Russia</option>
                   <option value="bypass-cn" ${settings.routingPreset === "bypass-cn" ? "selected" : ""}>Bypass China (GEOIP/Geosite CN &amp; .cn direct)</option>
                   <option value="block-ads" ${settings.routingPreset === "block-ads" ? "selected" : ""}>Block Ads &amp; Malicious Trackers</option>
                 </select>
@@ -3577,6 +3591,11 @@ async function handlePanel(request, env2) {
           initialTab = "protocols";
           check(KV_KEYS.relayIp, "relayIp", String(formData.get("relayIp") || "").trim(), currentSettings.relayIp);
         }
+        if (formData.has("nat64Prefixes")) {
+          const nat64 = String(formData.get("nat64Prefixes") || "").trim();
+          if (nat64.split(/[\s,]+/).filter(Boolean).some((p) => !/^\[?[0-9a-fA-F:]+::\]?(\/96)?$/.test(p))) throw new Error("NAT64 prefixes must look like 2602:fc59:b0:64:: (a /96 ending in ::).");
+          check(KV_KEYS.nat64Prefixes, "nat64Prefixes", nat64, currentSettings.nat64Prefixes.join(", "));
+        }
         if (formData.has("dnsDoH")) {
           if (!formData.has("vlessUuid")) initialTab = "dns";
           check(KV_KEYS.dnsDoH, "dnsDoH", validateDoh(String(formData.get("dnsDoH") || "").trim()), currentSettings.dnsDoH);
@@ -3746,6 +3765,23 @@ async function authorizeSubscription(request, env2, expectedToken) {
       return true;
   }
   return false;
+}
+// Countries each "bypass" preset sends direct. Rule data comes from the jsDelivr
+// mirror because raw.githubusercontent.com is filtered in Iran and Russia.
+var BYPASS_PRESETS = {
+  "bypass-iran": ["ir"],
+  "bypass-russia": ["ru"],
+  "bypass-iran-russia": ["ir", "ru"],
+  "bypass-cn": ["cn"]
+};
+var BYPASS_COUNTRIES = {
+  ir: { geosite: "category-ir", suffixes: ["ir"] },
+  ru: { geosite: "category-ru", suffixes: ["ru", "su", "xn--p1ai"] },
+  cn: { geosite: "cn", suffixes: ["cn"] }
+};
+var GEO_MIRROR = "https://testingcf.jsdelivr.net/gh";
+function bypassCountries(preset) {
+  return (BYPASS_PRESETS[preset] || []).map((code) => ({ code, ...BYPASS_COUNTRIES[code] }));
 }
 function buildClashChainProxy(settings) {
   if (!settings.chainEnabled || !settings.chainAddress)
@@ -4201,18 +4237,12 @@ ${reservedLine}`.trim();
     const warpProxyName = hasWarp ? '\n      - "BlueKnight-Warp"' : "";
     const chainProxyName = "";
     let clashRules = "";
-    if (settings.routingPreset === "bypass-iran") {
-      clashRules = `
-  - DOMAIN-SUFFIX,ir,DIRECT
-  - GEOIP,IR,DIRECT
-  - GEOSITE,category-ir,DIRECT
-  - GEOIP,lan,DIRECT,no-resolve
-  - MATCH,PROXY`;
-    } else if (settings.routingPreset === "bypass-cn") {
-      clashRules = `
-  - DOMAIN-SUFFIX,cn,DIRECT
-  - GEOIP,CN,DIRECT
-  - GEOSITE,cn,DIRECT
+    const clashCountries = bypassCountries(settings.routingPreset);
+    if (clashCountries.length) {
+      clashRules = clashCountries.map(({ code, geosite, suffixes }) => suffixes.map((x) => `
+  - DOMAIN-SUFFIX,${x},DIRECT`).join("") + `
+  - GEOSITE,${geosite},DIRECT
+  - GEOIP,${code.toUpperCase()},DIRECT`).join("") + `
   - GEOIP,lan,DIRECT,no-resolve
   - MATCH,PROXY`;
     } else if (settings.routingPreset === "block-ads") {
@@ -4282,6 +4312,13 @@ bind-address: "${bindAddressStr}"
 mode: rule
 log-level: info
 ipv6: ${settings.clientDns.ipv6}
+geo-auto-update: true
+geo-update-interval: 72
+geox-url:
+  geoip: "${GEO_MIRROR}/MetaCubeX/meta-rules-dat@release/geoip.dat"
+  geosite: "${GEO_MIRROR}/MetaCubeX/meta-rules-dat@release/geosite.dat"
+  mmdb: "${GEO_MIRROR}/MetaCubeX/meta-rules-dat@release/country.mmdb"
+  asn: "${GEO_MIRROR}/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb"
 ${clashDns(settings.clientDns, workerHost)}
 
 proxies:${vlessClashProxies}${trojanClashProxies}${ssClashProxies}${warpProxyEntry}${chainProxyEntry}
@@ -4392,14 +4429,18 @@ rules:${clashDnsRules(settings.clientDns)}${clashRules}
     outboundsList.push({ type: "direct", tag: "direct" });
     const routeRules = [{ action: "sniff" }, { protocol: "dns", action: "hijack-dns" }];
     const ruleSets = [];
-    const country = settings.routingPreset === "bypass-iran" ? "ir" : settings.routingPreset === "bypass-cn" ? "cn" : null;
-    if (country) {
-      const tag = "geoip-" + country;
-      ruleSets.push({ type: "remote", tag, format: "binary", url: `https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/${tag}.srs`, download_detour: "direct" });
-      routeRules.push({ ip_is_private: true, outbound: "direct" }, { rule_set: [tag], outbound: "direct" }, { domain_suffix: [country], outbound: "direct" });
+    // Rule sets download through the proxy: a direct fetch fails where GitHub is filtered.
+    const ruleSet = (tag, repo) => ({ type: "remote", tag, format: "binary", url: `${GEO_MIRROR}/SagerNet/${repo}@rule-set/${tag}.srs`, download_detour: "select" });
+    const countries = bypassCountries(settings.routingPreset);
+    if (countries.length) {
+      routeRules.push({ ip_is_private: true, outbound: "direct" });
+      for (const { code, geosite, suffixes } of countries) {
+        ruleSets.push(ruleSet(`geoip-${code}`, "sing-geoip"), ruleSet(`geosite-${geosite}`, "sing-geosite"));
+        routeRules.push({ domain_suffix: suffixes, outbound: "direct" }, { rule_set: [`geosite-${geosite}`, `geoip-${code}`], outbound: "direct" });
+      }
     } else if (settings.routingPreset === "block-ads") {
-      ruleSets.push({ type: "remote", tag: "ads", format: "binary", url: "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ads-all.srs", download_detour: "direct" });
-      routeRules.push({ rule_set: ["ads"], action: "reject" });
+      ruleSets.push(ruleSet("geosite-category-ads-all", "sing-geosite"));
+      routeRules.push({ rule_set: ["geosite-category-ads-all"], action: "reject" });
     }
     const listenAddress = settings.allowLANConnection ? "0.0.0.0" : "127.0.0.1";
     const singboxConfig = {
@@ -4508,31 +4549,11 @@ rules:${clashDnsRules(settings.clientDns)}${clashRules}
       }
     }));
     const xrayRules = [];
-    if (settings.routingPreset === "bypass-iran") {
+    const xrayCountries = bypassCountries(settings.routingPreset);
+    if (xrayCountries.length) {
       xrayRules.push(
-        {
-          type: "field",
-          outboundTag: "direct",
-          ip: ["geoip:private", "geoip:ir"]
-        },
-        {
-          type: "field",
-          outboundTag: "direct",
-          domain: ["geosite:category-ir", "domain:ir"]
-        }
-      );
-    } else if (settings.routingPreset === "bypass-cn") {
-      xrayRules.push(
-        {
-          type: "field",
-          outboundTag: "direct",
-          ip: ["geoip:private", "geoip:cn"]
-        },
-        {
-          type: "field",
-          outboundTag: "direct",
-          domain: ["geosite:cn", "domain:cn"]
-        }
+        { type: "field", outboundTag: "direct", ip: ["geoip:private", ...xrayCountries.map(({ code }) => `geoip:${code}`)] },
+        { type: "field", outboundTag: "direct", domain: xrayCountries.flatMap(({ geosite, suffixes }) => [`geosite:${geosite}`, ...suffixes.map((x) => `domain:${x}`)]) }
       );
     } else if (settings.routingPreset === "block-ads") {
       xrayRules.push({
@@ -5006,7 +5027,7 @@ async function handleWebSocketProxy(request, env2, ctx) {
   const ssRequest = new URL(request.url).pathname.endsWith('/ss');
   const ssSettings = ssRequest ? await getOrInitSettings(env2) : null;
   const sessionPromise = (ssRequest
-    ? serveShadowsocks(serverWs, ssSettings, Object.assign((host, port, viaRelay) => establishOutboundSocket(host, port, ssSettings, viaRelay), { canRelay: !!ssSettings?.relayIp && !ssSettings?.chainEnabled }), earlyData)
+    ? serveShadowsocks(serverWs, ssSettings, Object.assign((host, port, viaRelay) => establishOutboundSocket(host, port, ssSettings, viaRelay), { canRelay: canFallback(ssSettings) }), earlyData)
     : handleProxySession(serverWs, env2, earlyData)).catch((err) => {
     console.warn("Proxy session error:", err?.message || err);
     try {
@@ -5136,7 +5157,9 @@ async function dialSocks5Chain(remoteSocket, targetHost, targetPort, chainAuth) 
 async function establishOutboundSocket(targetHost, targetPort, settings, viaRelay = false) {
   const nativeConnect = await getConnect();
   const connect2 = (address, options) => {
-    const socket = nativeConnect(address, options);
+    // Cloudflare's connect() only accepts IPv6 literals in brackets.
+    const hostname = String(address.hostname).replace(/^\[|\]$/g, "");
+    const socket = nativeConnect({ ...address, hostname: hostname.includes(":") ? `[${hostname}]` : hostname }, options);
     return { readable: socket.readable, writable: socket.writable,
       opened: socket.opened, closed: socket.closed, close: () => socket.close() };
   };
@@ -5153,11 +5176,27 @@ async function establishOutboundSocket(targetHost, targetPort, settings, viaRela
     } catch (err) { socket2.close(); throw err; }
     return socket2;
   }
-  if (viaRelay) {
-    const relay = parseHostPort(settings.relayIp, targetPort);
-    const socket2 = connect2(relay);
+  if (viaRelay && settings.relayIp) {
+    const socket2 = connect2(parseHostPort(settings.relayIp, targetPort));
     await socket2.opened;
     return socket2;
+  }
+  if (viaRelay) {
+    // Public NAT64 gateways come and go, so dial every prefix and keep the first that opens.
+    const addresses = await nat64Addresses(cleanHost, settings.nat64Prefixes);
+    const sockets = addresses.map((hostname) => connect2({ hostname, port: targetPort }));
+    let timer;
+    try {
+      const winner = await Promise.race([
+        Promise.any(sockets.map((s) => s.opened.then(() => s))),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("no NAT64 gateway answered within 8s")), 8000); })
+      ]);
+      for (const s of sockets) if (s !== winner) try { s.close(); } catch {}
+      return winner;
+    } catch (err) {
+      for (const s of sockets) try { s.close(); } catch {}
+      throw err instanceof AggregateError ? new Error("every NAT64 gateway refused the connection") : err;
+    } finally { clearTimeout(timer); }
   }
   const socket = connect2({
     hostname: cleanHost,
@@ -5190,6 +5229,23 @@ async function testChain(settings, host = "example.com", port = 80) {
     clearTimeout(timer);
     try { socket?.close(); } catch {}
   }
+}
+// Probed from Workers on 2026-09-22: only nat64.net Helsinki answered; the rest are kept as backups.
+var DEFAULT_NAT64_PREFIXES = "2a01:4f9:c010:3f02:64::, 2a01:4f8:c2c:123f:64::, 2a00:1098:2b::, 2602:fc59:b0:64::, 2602:fc59:11:64::, 2a02:898:146:64::";
+function canFallback(settings) {
+  return !!settings && !settings.chainEnabled && (!!settings.relayIp || settings.nat64Prefixes.length > 0);
+}
+// Embeds the target's IPv4 in each NAT64 /96 prefix, e.g. 2602:fc59:b0:64::6812:1a2b.
+async function nat64Addresses(host, prefixes) {
+  let ipv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(host) ? host : null;
+  if (!ipv4 && !host.includes(":")) {
+    const res = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=A`, { headers: { accept: "application/dns-json" } });
+    ipv4 = ((await res.json()).Answer || []).find((a) => a.type === 1)?.data || null;
+  }
+  if (!ipv4) throw new Error(`NAT64 needs an IPv4 target; ${host} has none`);
+  const [a, b, c, d] = ipv4.split(".").map(Number);
+  const hex = (x, y) => ((x << 8) | y).toString(16);
+  return prefixes.map((prefix) => `${prefix}${hex(a, b)}:${hex(c, d)}`);
 }
 function parseHostPort(value, defaultPort) {
   const m = String(value).trim().match(/^\[([^\]]+)\](?::(\d+))?$|^([^:]+)(?::(\d+))?$/);
@@ -5282,7 +5338,7 @@ async function handleProxySession(ws, env2, earlyData) {
       hasHandshaked = true;
       // Workers refuse sockets to Cloudflare's own IPs, so CDN-fronted sites
       // either fail to dial or close with zero bytes. Retry once via relayIp.
-      const canRelay = !!settings.relayIp && !settings.chainEnabled;
+      const canRelay = canFallback(settings);
       const dial = async (viaRelay) => {
         if (remoteSocket) {
           try { socketWriter?.releaseLock(); } catch {}
@@ -6661,7 +6717,7 @@ var init_worker = __esm({
     APP_CONFIG = {
       name: "BlueKnight Panel",
       tagline: "Ethereal Pastel Encrypted DNS & Multi-Protocol Proxy",
-      version: "5.2.3",
+      version: "5.2.4",
       // bk_* is the BlueKnight cookie; wd_session is still accepted so sessions
       // issued before the rename keep working until they expire.
       cookieName: "bk_session",
@@ -6687,6 +6743,7 @@ var init_worker = __esm({
       proxyPath: "config:proxy_path",
       proxyIp: "config:proxy_ip",
       relayIp: "config:relay_ip",
+      nat64Prefixes: "config:nat64_prefixes",
       subToken: "config:sub_token",
       dnsDoH: "config:dns_doh",
       allowLANConnection: "config:allow_lan_connection",
