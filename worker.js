@@ -143,6 +143,60 @@ function invalidateSettingsCache() {
   cachedSettings = null;
   cachedSettingsTimestamp = 0;
 }
+// Reading the 61 settings keys one by one cost 61 KV reads per reload, which ran a
+// busy free-tier Worker (100k reads/day) out of quota. They are also kept together
+// in one snapshot value, so a reload is 1 read. The per-key values stay authoritative
+// (older builds and dashboard edits write them), so the snapshot is rebuilt hourly.
+var SETTINGS_SNAPSHOT_MAX_AGE_MS = 36e5;
+// Order matches the destructuring in getOrInitSettings.
+var SETTINGS_FIELDS = ["vlessUuid", "trojanPassword", "proxyPath", "proxyIp", "relayIp", "nat64Prefixes", "subToken", "dnsDoH", "allowLANConnection", "fragmentEnabled", "fragmentPackets", "fragmentLength", "fragmentInterval", "routingPreset", "warpPrivateKey", "warpPeerPublicKey", "warpIPv6", "warpReserved", "warpProEnabled", "warpAmneziaVersion", "warpNoiseCount", "warpNoiseMin", "warpNoiseMax", "warpNoiseDelay", "warpAmneziaS1", "warpAmneziaS2", "warpAmneziaH1", "warpAmneziaH2", "warpAmneziaH3", "warpAmneziaH4", "chainEnabled", "chainType", "chainAddress", "chainPort", "chainAuth", "chainPath", "chainSecurity", "chainTransport", "chainSni", "chainHost", "nodeShareToken", "domainFrontingEnabled", "frontingSni", "frontingHost", "frontingCleanIps", "staticIpList", "openvpnEnabled", "openvpnPort", "openvpnProto", "openvpnCipher", "anytlsFingerprint", "anytlsAlpn", "xhttpEnabled", "xhttpPath", "xhttpMode", "httpUpgradeEnabled", "ssEnabled", "ssPassword", "ssMethod", "dnsCustom", "clientDnsSettings"];
+async function readSettingsValues(kv) {
+  // server.js's disk store answers identity keys from env vars; a stored snapshot
+  // would pin the old values after those env vars change.
+  const useSnapshot = !kv.envOverrides;
+  if (useSnapshot) {
+    let snapshot = null;
+    try { snapshot = JSON.parse(await kv.get(KV_KEYS.settingsSnapshot) || "null"); } catch (err) {
+      if (!(err instanceof SyntaxError)) throw err;
+    }
+    // Missing identities are minted by the caller, so only a fresh per-key read may report them absent.
+    const complete = ["vlessUuid", "trojanPassword", "subToken", "nodeShareToken"].every((field) => snapshot?.values?.[KV_KEYS[field]]);
+    if (complete && Date.now() - snapshot.builtAt < SETTINGS_SNAPSHOT_MAX_AGE_MS) return snapshot.values;
+  }
+  const keys = SETTINGS_FIELDS.map((field) => KV_KEYS[field]);
+  const found = await Promise.all(keys.map((key) => kv.get(key)));
+  const values = Object.fromEntries(keys.map((key, i) => [key, found[i]]));
+  if (useSnapshot) {
+    try {
+      await kv.put(KV_KEYS.settingsSnapshot, JSON.stringify({ builtAt: Date.now(), values }));
+    } catch (err) {
+      console.warn("Could not store the settings snapshot:", err?.message || err);
+    }
+  }
+  return values;
+}
+// Every settings write goes through here after its per-key puts, so the snapshot never
+// hides a save. If it cannot be patched it is dropped and the next load rebuilds it.
+async function settingsChanged(kv, items) {
+  invalidateSettingsCache();
+  if (kv.envOverrides || !items.length) return;
+  try {
+    const snapshot = JSON.parse(await kv.get(KV_KEYS.settingsSnapshot) || "null");
+    if (!snapshot?.values) return;
+    for (const { key, value } of items) if (key in snapshot.values) snapshot.values[key] = value;
+    await kv.put(KV_KEYS.settingsSnapshot, JSON.stringify(snapshot));
+  } catch (err) {
+    console.warn("Could not update the settings snapshot, dropping it:", err?.message || err);
+    try { await kv.delete(KV_KEYS.settingsSnapshot); } catch {}
+  }
+}
+// Serves the last good settings when KV is unreachable (e.g. daily read quota).
+function staleSettings(now, err) {
+  if (!cachedSettings) throw new Error(`Settings unavailable, KV read failed: ${err?.message || err}`);
+  console.warn("KV read failed, serving cached settings:", err?.message || err);
+  cachedSettingsTimestamp = now;
+  return cachedSettings;
+}
 async function getOrInitSettings(env2) {
   const now = Date.now();
   if (cachedSettings && now - cachedSettingsTimestamp < CACHE_TTL_MS) {
@@ -274,71 +328,11 @@ async function getOrInitSettings(env2) {
         ssMethod,
         dnsCustom,
         clientDnsSettings
-      ] = await Promise.all([
-        kv.get(KV_KEYS.vlessUuid),
-        kv.get(KV_KEYS.trojanPassword),
-        kv.get(KV_KEYS.proxyPath),
-        kv.get(KV_KEYS.proxyIp),
-        kv.get(KV_KEYS.relayIp),
-        kv.get(KV_KEYS.nat64Prefixes),
-        kv.get(KV_KEYS.subToken),
-        kv.get(KV_KEYS.dnsDoH),
-        kv.get(KV_KEYS.allowLANConnection),
-        kv.get(KV_KEYS.fragmentEnabled),
-        kv.get(KV_KEYS.fragmentPackets),
-        kv.get(KV_KEYS.fragmentLength),
-        kv.get(KV_KEYS.fragmentInterval),
-        kv.get(KV_KEYS.routingPreset),
-        kv.get(KV_KEYS.warpPrivateKey),
-        kv.get(KV_KEYS.warpPeerPublicKey),
-        kv.get(KV_KEYS.warpIPv6),
-        kv.get(KV_KEYS.warpReserved),
-        kv.get(KV_KEYS.warpProEnabled),
-        kv.get(KV_KEYS.warpAmneziaVersion),
-        kv.get(KV_KEYS.warpNoiseCount),
-        kv.get(KV_KEYS.warpNoiseMin),
-        kv.get(KV_KEYS.warpNoiseMax),
-        kv.get(KV_KEYS.warpNoiseDelay),
-        kv.get(KV_KEYS.warpAmneziaS1),
-        kv.get(KV_KEYS.warpAmneziaS2),
-        kv.get(KV_KEYS.warpAmneziaH1),
-        kv.get(KV_KEYS.warpAmneziaH2),
-        kv.get(KV_KEYS.warpAmneziaH3),
-        kv.get(KV_KEYS.warpAmneziaH4),
-        kv.get(KV_KEYS.chainEnabled),
-        kv.get(KV_KEYS.chainType),
-        kv.get(KV_KEYS.chainAddress),
-        kv.get(KV_KEYS.chainPort),
-        kv.get(KV_KEYS.chainAuth),
-        kv.get(KV_KEYS.chainPath),
-        kv.get(KV_KEYS.chainSecurity),
-        kv.get(KV_KEYS.chainTransport),
-        kv.get(KV_KEYS.chainSni),
-        kv.get(KV_KEYS.chainHost),
-        kv.get(KV_KEYS.nodeShareToken),
-        kv.get(KV_KEYS.domainFrontingEnabled),
-        kv.get(KV_KEYS.frontingSni),
-        kv.get(KV_KEYS.frontingHost),
-        kv.get(KV_KEYS.frontingCleanIps),
-        kv.get(KV_KEYS.staticIpList),
-        kv.get(KV_KEYS.openvpnEnabled),
-        kv.get(KV_KEYS.openvpnPort),
-        kv.get(KV_KEYS.openvpnProto),
-        kv.get(KV_KEYS.openvpnCipher),
-        kv.get(KV_KEYS.anytlsFingerprint),
-        kv.get(KV_KEYS.anytlsAlpn),
-        kv.get(KV_KEYS.xhttpEnabled),
-        kv.get(KV_KEYS.xhttpPath),
-        kv.get(KV_KEYS.xhttpMode),
-        kv.get(KV_KEYS.httpUpgradeEnabled),
-        kv.get(KV_KEYS.ssEnabled),
-        kv.get(KV_KEYS.ssPassword),
-        kv.get(KV_KEYS.ssMethod),
-        kv.get(KV_KEYS.dnsCustom),
-        kv.get(KV_KEYS.clientDnsSettings)
-      ]);
+      ] = await readSettingsValues(kv).then((values) => SETTINGS_FIELDS.map((field) => values[KV_KEYS[field]] ?? null));
     } catch (err) {
-      console.warn("Could not read settings from KV:", err);
+      // Never fall through to first-run init here: it would mint a new UUID, password
+      // and sub token over the real ones and break every client config.
+      return staleSettings(now, err);
     }
   }
   const missingKeysToPersist = [];
@@ -359,9 +353,11 @@ async function getOrInitSettings(env2) {
     missingKeysToPersist.push({ key: KV_KEYS.nodeShareToken, value: nodeShareToken });
   }
   if (missingKeysToPersist.length > 0 && kv) {
+    const persisted = [];
     for (const item of missingKeysToPersist) {
       try {
         await kv.put(item.key, item.value);
+        persisted.push(item);
       } catch (saveErr) {
         console.warn(`Failed to persist initial key ${item.key} to KV:`, saveErr?.message || saveErr);
         if (saveErr?.message?.toLowerCase().includes("limit exceeded") || saveErr?.message?.toLowerCase().includes("quota")) {
@@ -370,6 +366,7 @@ async function getOrInitSettings(env2) {
         }
       }
     }
+    await settingsChanged(kv, persisted);
   }
   const effectiveProxyPath = proxyPath && proxyPath.trim().length > 0 ? proxyPath.trim().startsWith("/") ? proxyPath.trim() : `/${proxyPath.trim()}` : APP_CONFIG.defaultProxyPath;
   const effectiveDnsDoH = dnsDoH && dnsDoH.trim().length > 0 ? dnsDoH.trim() : APP_CONFIG.defaultDohUpstream;
@@ -1193,7 +1190,9 @@ async function hasConfiguredPassword(env2) {
         return true;
       }
     } catch (err) {
-      console.warn("Could not check password from KV:", err);
+      // A failed read is not "no password": answering false would open /panel/setup
+      // to anyone while KV is down (e.g. the daily read quota is used up).
+      throw new Error(`Cannot verify the admin password, KV read failed: ${err?.message || err}`);
     }
   }
   cachedPasswordConfigured = false;
@@ -3380,13 +3379,14 @@ async function registerWarpAccount(env2) {
   const endpoint = "162.159.192.1:2408";
   const reserved = parseReservedBytes(data.config.client_id);
   try {
-    await kv.put(KV_KEYS.warpPrivateKey, privateKey);
-    await kv.put(KV_KEYS.warpPeerPublicKey, peerPublicKey);
-    if (ipv6)
-      await kv.put(KV_KEYS.warpIPv6, ipv6);
-    if (reserved)
-      await kv.put(KV_KEYS.warpReserved, reserved);
-    invalidateSettingsCache();
+    const items = [
+      { key: KV_KEYS.warpPrivateKey, value: privateKey },
+      { key: KV_KEYS.warpPeerPublicKey, value: peerPublicKey },
+      ...ipv6 ? [{ key: KV_KEYS.warpIPv6, value: ipv6 }] : [],
+      ...reserved ? [{ key: KV_KEYS.warpReserved, value: reserved }] : []
+    ];
+    for (const item of items) await kv.put(item.key, item.value);
+    await settingsChanged(kv, items);
   } catch (putErr) {
     const isQuota = putErr?.message?.toLowerCase().includes("quota") || putErr?.message?.toLowerCase().includes("limit exceeded");
     if (isQuota) {
@@ -3495,7 +3495,7 @@ async function handlePanel(request, env2) {
         }
         const newToken = generateRandomToken2(24);
         await kv.put(KV_KEYS.nodeShareToken, newToken);
-        invalidateSettingsCache();
+        await settingsChanged(kv, [{ key: KV_KEYS.nodeShareToken, value: newToken }]);
         settings = await getOrInitSettings(env2);
         flashMessage = { type: "success", text: "New Node Share token generated! \u2728" };
       } catch (err) {
@@ -3715,15 +3715,20 @@ async function handlePanel(request, env2) {
         if (updates.length === 0) {
           flashMessage = { type: "success", text: "No settings were modified \u2014 0 KV writes consumed. \u2728" };
         } else {
-          for (const item of updates) {
-            try {
-              await kv.put(item.key, item.value);
-            } catch (putErr) {
-              const isQuota = putErr?.message?.toLowerCase().includes("quota") || putErr?.message?.toLowerCase().includes("limit exceeded");
-              throw new Error(isQuota ? "KV write quota exceeded \u2014 try again after daily reset" : putErr?.message || "Failed to write to KV");
+          const written = [];
+          try {
+            for (const item of updates) {
+              try {
+                await kv.put(item.key, item.value);
+                written.push(item);
+              } catch (putErr) {
+                const isQuota = putErr?.message?.toLowerCase().includes("quota") || putErr?.message?.toLowerCase().includes("limit exceeded");
+                throw new Error(isQuota ? "KV write quota exceeded \u2014 try again after daily reset" : putErr?.message || "Failed to write to KV");
+              }
             }
+          } finally {
+            await settingsChanged(kv, written);
           }
-          invalidateSettingsCache();
           settings = await getOrInitSettings(env2);
           flashMessage = { type: "success", text: `Saved ${updates.length} updated setting(s) to KV! \u2728` };
         }
@@ -3943,7 +3948,11 @@ async function handleXhttpProxy(request, env2, ctx) {
     responseHeader = createVlessResponseHeader(vless.version);
   }
   try {
-    const socket = await establishOutboundSocket(targetHost, targetPort, settings);
+    // Same relay/NAT64 retry as WebSocket sessions: Workers cannot dial Cloudflare IPs.
+    const socket = await establishOutboundSocket(targetHost, targetPort, settings).catch((err) => {
+      if (!canFallback(settings)) throw err;
+      return establishOutboundSocket(targetHost, targetPort, settings, true);
+    });
     const writer = socket.writable.getWriter();
     if (initialPayload.length > 0) {
       await writer.write(initialPayload);
@@ -5340,6 +5349,9 @@ async function handleProxySession(ws, env2, earlyData) {
       // either fail to dial or close with zero bytes. Retry once via relayIp.
       const canRelay = canFallback(settings);
       const dial = async (viaRelay) => {
+        // The client left (common when a browser or ping test aborts): do not start a
+        // relay/NAT64 retry that costs a DoH lookup and six sockets for nobody.
+        if (isClosed) return;
         if (remoteSocket) {
           try { socketWriter?.releaseLock(); } catch {}
           try { remoteSocket.close(); } catch {}
@@ -5806,17 +5818,20 @@ async function handleNodeImport(request, env2) {
         pendingWrites.push({ key: KV_KEYS.warpPrivateKey, value: secrets.warpPrivateKey, fieldName: "warpPrivateKey" });
       }
     }
-    for (const item of pendingWrites) {
-      try {
-        await kv.put(item.key, item.value);
-        importedKeys.push(item.fieldName);
-      } catch (putErr) {
-        const isQuota = putErr?.message?.toLowerCase().includes("quota") || putErr?.message?.toLowerCase().includes("limit exceeded");
-        throw new Error(isQuota ? "KV write quota exceeded \u2014 try again after daily reset" : putErr?.message || "Failed to write imported key to KV");
+    const written = [];
+    try {
+      for (const item of pendingWrites) {
+        try {
+          await kv.put(item.key, item.value);
+          importedKeys.push(item.fieldName);
+          written.push(item);
+        } catch (putErr) {
+          const isQuota = putErr?.message?.toLowerCase().includes("quota") || putErr?.message?.toLowerCase().includes("limit exceeded");
+          throw new Error(isQuota ? "KV write quota exceeded \u2014 try again after daily reset" : putErr?.message || "Failed to write imported key to KV");
+        }
       }
-    }
-    if (importedKeys.length > 0) {
-      invalidateSettingsCache();
+    } finally {
+      await settingsChanged(kv, written);
     }
     return new Response(
       JSON.stringify(
@@ -6717,7 +6732,7 @@ var init_worker = __esm({
     APP_CONFIG = {
       name: "BlueKnight Panel",
       tagline: "Ethereal Pastel Encrypted DNS & Multi-Protocol Proxy",
-      version: "5.2.4",
+      version: "5.2.5",
       // bk_* is the BlueKnight cookie; wd_session is still accepted so sessions
       // issued before the rename keep working until they expire.
       cookieName: "bk_session",
@@ -6743,6 +6758,7 @@ var init_worker = __esm({
       proxyPath: "config:proxy_path",
       proxyIp: "config:proxy_ip",
       relayIp: "config:relay_ip",
+      settingsSnapshot: "config:settings_snapshot",
       nat64Prefixes: "config:nat64_prefixes",
       subToken: "config:sub_token",
       dnsDoH: "config:dns_doh",

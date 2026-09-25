@@ -57,6 +57,8 @@ function flushKVToFile() {
 }
 
 const nodeKV = {
+  // get() answers identity keys from env vars, so the worker must not snapshot them.
+  envOverrides: true,
   async get(key) {
     // Check direct env vars first
     if (key === 'config:admin_password' && process.env.PANEL_PASSWORD) return process.env.PANEL_PASSWORD;
