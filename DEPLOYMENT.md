@@ -27,6 +27,12 @@ The deploy helper creates/binds KV. For manual deployment, create a `BK_KV` name
 
 ## Update your panel
 
+### One-click update (Cloudflare Workers)
+
+**Settings → Panel Update** compares your version with the latest GitHub release. On a Workers deployment, enter a Cloudflare API token made from the **Edit Cloudflare Workers** template and press **Update**: the panel downloads that release's `worker-standalone.js` and replaces its own code through the Cloudflare API. KV data, secrets, bindings and settings are kept. The token is used for that request only and never stored; set it as the `CF_API_TOKEN` secret to skip the field. The Worker name is filled in for `*.workers.dev` hosts; on a custom domain, type it as the dashboard shows it.
+
+Cloudflare Pages and non-Cloudflare hosts cannot replace their own code, so the card links to the release instead; update those with the deploy tool below.
+
 ### Separate Workers test deployment
 
 Test URL: https://your-worker.your-subdomain.workers.dev/panel
@@ -63,7 +69,7 @@ node deploy.mjs cloudflare-pages --project=your-project --branch=your-branch --y
 
 The helper downloads the project's existing configuration into an isolated staging directory, preserves its KV bindings, copies the current Worker/Functions/static assets, and publishes to the selected branch. It does not replace your panel password, subscription token, UUID, or existing KV namespace. The root Workers configuration is unchanged. Cloudflare authentication through Wrangler is required.
 
-After publishing, check `https://your-project.pages.dev/api/health` for version `5.2.5`, then refresh the panel. Use Ctrl+F5 if an old page is still displayed. The updated Subscriptions section includes native connection downloads, and the Protocols section explains which connections require a native server. OpenVPN and ShadowTLS do not run inside Pages: those downloads need a separately provisioned native deployment.
+After publishing, check `https://your-project.pages.dev/api/health` for version `5.2.6`, then refresh the panel. Use Ctrl+F5 if an old page is still displayed. The updated Subscriptions section includes native connection downloads, and the Protocols section explains which connections require a native server. OpenVPN and ShadowTLS do not run inside Pages: those downloads need a separately provisioned native deployment.
 
 Latest upload: 2026-09-09, deployment `f50ebbf4-d997-4cfa-ab31-d051a0d83a2f`, confirmed as production by Wrangler. All six predeployment suites passed. Live HTTP/UI verification was blocked by this workstation's DNS/network failures; see [the audit](CONNECTION-AUDIT.md) for the exact validation scope.
 

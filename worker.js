@@ -3009,6 +3009,33 @@ function renderDashboardPage(options) {
           </div>
         </div>
 
+        <!-- Panel Update -->
+        <div class="card" style="margin-bottom: 16px;">
+          <div class="card-title">
+            <span>⬆️</span>
+            <span>Panel Update</span>
+          </div>
+          <p class="card-desc">Installed <b>v${APP_CONFIG.version}</b> &bull; Latest <b id="updateLatest">checking&hellip;</b></p>
+          <div id="updateForm" hidden>
+            <div class="grid-2col">
+              <div class="form-group">
+                <label class="form-label" for="updateScript">Worker name</label>
+                <input type="text" id="updateScript" class="form-control code-input" placeholder="my-panel-worker" autocomplete="off" />
+              </div>
+              <div class="form-group" id="updateTokenGroup">
+                <label class="form-label" for="updateToken">Cloudflare API token</label>
+                <input type="password" id="updateToken" class="form-control code-input" placeholder="Edit Cloudflare Workers token" autocomplete="off" />
+              </div>
+            </div>
+            <p class="card-desc" id="updateTokenHelp">Create the token at <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener">dash.cloudflare.com &rarr; API Tokens</a> with the &ldquo;Edit Cloudflare Workers&rdquo; template. It is used for this update only and never stored. Set it as the <code>CF_API_TOKEN</code> secret to skip this field. Your KV data, secrets and settings are kept.</p>
+            <button type="button" id="updateBtn" class="btn btn-primary" style="width: 100%; height: 40px;" onclick="applyPanelUpdate()">
+              <span id="updateBtnLabel">Update</span>
+              <span>\u{1F680}</span>
+            </button>
+          </div>
+          <p class="card-desc" style="margin: 10px 0 0;"><span id="updateStatus"></span> <a id="updateNotes" href="https://github.com/BlueKnightNet/Blue-Knight-Panel/releases" target="_blank" rel="noopener" hidden>Release notes</a></p>
+        </div>
+
         <!-- Appearance & Theme Selector Card -->
         <div class="card">
           <div class="card-title">
@@ -3188,6 +3215,60 @@ function renderDashboardPage(options) {
       }
     }
 
+    async function checkPanelUpdate() {
+      const status = document.getElementById('updateStatus');
+      try {
+        const r = await (await fetch('/panel/settings/update/check', { method: 'POST' })).json();
+        if (!r.ok) throw new Error(r.error);
+        document.getElementById('updateLatest').textContent = 'v' + r.latest;
+        if (!r.updateAvailable) { status.textContent = 'You are on the latest version.'; return; }
+        const notes = document.getElementById('updateNotes');
+        notes.href = 'https://github.com/BlueKnightNet/Blue-Knight-Panel/releases/tag/v' + r.latest;
+        notes.hidden = false;
+        if (!r.supported) { status.textContent = 'v' + r.latest + ' is available. ' + r.reason; return; }
+        status.textContent = 'v' + r.latest + ' is available.';
+        document.getElementById('updateScript').value = r.scriptName || '';
+        document.getElementById('updateTokenGroup').hidden = r.tokenConfigured;
+        document.getElementById('updateTokenHelp').hidden = r.tokenConfigured;
+        document.getElementById('updateBtnLabel').textContent = 'Update to v' + r.latest;
+        document.getElementById('updateForm').hidden = false;
+      } catch (err) {
+        document.getElementById('updateLatest').textContent = 'unknown';
+        status.textContent = 'Could not check for updates: ' + err.message;
+      }
+    }
+
+    async function applyPanelUpdate() {
+      const btn = document.getElementById('updateBtn');
+      const status = document.getElementById('updateStatus');
+      btn.disabled = true;
+      status.textContent = 'Downloading and deploying, this takes about 15 seconds...';
+      try {
+        const r = await (await fetch('/panel/settings/update/apply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: document.getElementById('updateToken').value, scriptName: document.getElementById('updateScript').value })
+        })).json();
+        if (!r.ok) throw new Error(r.error);
+        document.getElementById('updateToken').value = '';
+        if (!r.updated) { status.textContent = r.message; return; }
+        status.textContent = r.message + ' Waiting for it to go live...';
+        for (let i = 0; i < 20; i++) {
+          await new Promise(done => setTimeout(done, 3000));
+          const health = await fetch('/api/health', { cache: 'no-store' }).then(res => res.json()).catch(() => ({}));
+          if (health.version === r.latest) {
+            showToast('Updated to v' + r.latest + '! Reloading...');
+            setTimeout(() => window.location.reload(), 1200);
+            return;
+          }
+        }
+        status.textContent = r.message + ' It can take a minute to reach every location; reload the page shortly.';
+      } catch (err) {
+        status.textContent = 'Update failed: ' + err.message;
+        btn.disabled = false;
+      }
+    }
+
     async function importNodeConfig() {
       const jsonStr = document.getElementById('importJsonText').value.trim();
       if (!jsonStr) {
@@ -3215,6 +3296,7 @@ function renderDashboardPage(options) {
 
     // Restore tab from URL hash on load
     window.addEventListener('DOMContentLoaded', () => {
+      checkPanelUpdate();
       const validTabs = ['overview', 'warp', 'subscriptions', 'protocols', 'dns', 'routing', 'settings'];
       const hash = window.location.hash.replace('#', '');
       if (hash && validTabs.includes(hash)) {
@@ -3416,6 +3498,76 @@ function generateRandomToken2(length = 24) {
   }
   return result;
 }
+// One-click update for Cloudflare Workers deployments: the official release's
+// worker-standalone.js replaces this Worker's code through the Cloudflare API
+// ("PUT .../content"), which keeps its KV binding, secrets and settings.
+var UPDATE_REPO = "BlueKnightNet/Blue-Knight-Panel";
+function compareVersions(a, b) {
+  const pa = a.split(".").map(Number), pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  return 0;
+}
+async function latestReleaseVersion() {
+  // The /releases/latest redirect names the tag without the GitHub API's 60 requests/hour limit.
+  const res = await fetch(`https://github.com/${UPDATE_REPO}/releases/latest`, { redirect: "manual", headers: { "User-Agent": "BlueKnight-Panel" } });
+  const tag = (res.headers.get("location") || "").match(/\/tag\/v?(\d+\.\d+\.\d+)$/);
+  if (!tag) throw new Error(`Could not read the latest release from GitHub (HTTP ${res.status}).`);
+  return tag[1];
+}
+function updateTarget(url, env2) {
+  const base = { tokenConfigured: !!env2.CF_API_TOKEN };
+  if (typeof navigator === "undefined" || navigator.userAgent !== "Cloudflare-Workers")
+    return { ...base, supported: false, reason: "One-click update works on Cloudflare Workers. On this host, update with the deploy tool from the release zip." };
+  if (url.hostname.endsWith(".pages.dev"))
+    return { ...base, supported: false, reason: "Cloudflare Pages cannot replace its own code. Run BlueKnight-Deploy.cmd from the release zip and choose Cloudflare Pages." };
+  // <script>.<account-subdomain>.workers.dev; custom domains have to name the Worker.
+  return { ...base, supported: true, scriptName: url.hostname.endsWith(".workers.dev") ? url.hostname.split(".")[0] : "" };
+}
+async function handlePanelUpdate(request, env2, url) {
+  // Replacing the Worker's code is the most sensitive action here: refuse anything cross-origin.
+  if (request.headers.get("origin") !== url.origin) return Response.json({ ok: false, error: "Cross-origin request refused." }, { status: 403 });
+  const target = updateTarget(url, env2);
+  try {
+    const current = APP_CONFIG.version;
+    const latest = await latestReleaseVersion();
+    const updateAvailable = compareVersions(latest, current) > 0;
+    if (url.pathname === "/panel/settings/update/check") return Response.json({ ok: true, current, latest, updateAvailable, ...target });
+    if (url.pathname !== "/panel/settings/update/apply") return Response.json({ ok: false, error: "Unknown update action." }, { status: 404 });
+    if (!target.supported) throw new Error(target.reason);
+    if (!updateAvailable) return Response.json({ ok: true, current, latest, updated: false, message: `Already on the latest version (v${current}).` });
+    const body = await request.json().catch(() => ({}));
+    // Used for this request only; never written to KV or logged.
+    const token = String(env2.CF_API_TOKEN || body.token || "").trim();
+    const scriptName = String(body.scriptName || target.scriptName || "").trim();
+    if (!token) throw new Error("Enter a Cloudflare API token created from the “Edit Cloudflare Workers” template.");
+    if (!/^[a-z0-9][a-z0-9_-]{0,62}$/i.test(scriptName)) throw new Error("Enter this Worker's name exactly as the Cloudflare dashboard shows it.");
+    const download = await fetch(`https://github.com/${UPDATE_REPO}/releases/download/v${latest}/worker-standalone.js`);
+    if (!download.ok) throw new Error(`Could not download v${latest} from GitHub (HTTP ${download.status}).`);
+    const code = await download.text();
+    // Refuse a truncated or mismatched file rather than deploy it.
+    if (!code.includes(`version: "${latest}"`)) throw new Error(`The downloaded worker-standalone.js is not v${latest}; nothing was changed.`);
+    const cf = async (path, init = {}) => {
+      const res = await fetch(`https://api.cloudflare.com/client/v4${path}`, { ...init, headers: { Authorization: `Bearer ${token}` } });
+      return res.json().catch(() => ({ success: false, errors: [{ message: `Cloudflare API HTTP ${res.status}` }] }));
+    };
+    const cfError = (r) => (r.errors || []).map((e) => e.message).join("; ") || "unknown Cloudflare API error";
+    const accounts = await cf("/accounts");
+    if (!accounts.success) throw new Error(`Cloudflare rejected the token: ${cfError(accounts)}`);
+    if (!accounts.result?.length) throw new Error("This token cannot see any account. Create it from the “Edit Cloudflare Workers” template.");
+    for (const account of accounts.result) {
+      const form = new FormData();
+      form.append("metadata", JSON.stringify({ main_module: "worker.js" }));
+      form.append("worker.js", new Blob([code], { type: "application/javascript+module" }), "worker.js");
+      const result = await cf(`/accounts/${account.id}/workers/scripts/${encodeURIComponent(scriptName)}/content`, { method: "PUT", body: form });
+      if (result.success) return Response.json({ ok: true, current, latest, updated: true, message: `Deployed v${latest} to ${scriptName}.` });
+      // 10007 (no such Worker) / 7003 (cannot route to it): not in this account, try the next one.
+      if (!(result.errors || []).some((e) => e.code === 10007 || e.code === 7003)) throw new Error(`Cloudflare refused the update: ${cfError(result)}`);
+    }
+    throw new Error(`No Worker named "${scriptName}" in the account(s) this token can access.`);
+  } catch (err) {
+    return Response.json({ ok: false, error: err?.message || String(err), ...target }, { status: 502 });
+  }
+}
 async function handlePanel(request, env2) {
   const url = new URL(request.url);
   const isConfigured = await hasConfiguredPassword(env2);
@@ -3441,6 +3593,9 @@ async function handlePanel(request, env2) {
   }
   let initialTab = "overview";
   const pathname = url.pathname;
+  if (request.method === "POST" && pathname.startsWith("/panel/settings/update/")) {
+    return handlePanelUpdate(request, env2, url);
+  }
   // Every sidebar entry needs a working deep link, not just the four that
   // happened to be listed here: /panel/settings/dns, /routing, /subscriptions
   // and /settings all used to fall back to the overview tab.
@@ -6732,7 +6887,7 @@ var init_worker = __esm({
     APP_CONFIG = {
       name: "BlueKnight Panel",
       tagline: "Ethereal Pastel Encrypted DNS & Multi-Protocol Proxy",
-      version: "5.2.5",
+      version: "5.2.6",
       // bk_* is the BlueKnight cookie; wd_session is still accepted so sessions
       // issued before the rename keep working until they expire.
       cookieName: "bk_session",
