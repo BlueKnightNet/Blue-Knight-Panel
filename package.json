@@ -1,6 +1,6 @@
 {
   "name": "blueknight-panel",
-  "version": "5.2.4",
+  "version": "5.2.5",
   "description": "BlueKnight Panel — Universal Proxy & Encrypted DNS Control Panel",
   "main": "server.js",
   "type": "module",
