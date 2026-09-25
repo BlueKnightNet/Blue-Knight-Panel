@@ -1973,6 +1973,7 @@ function renderDashboardPage(options) {
             <button type="button" class="theme-dice-btn" onclick="randomizeBlueKnightTheme()" title="Randomize Theme">\u{1F3B2}</button>
           </div>
 
+          <button type="button" id="headerUpdateBtn" class="btn btn-secondary btn-sm" onclick="openPanelUpdate()" title="Panel version and updates">\u2B06\uFE0F v${APP_CONFIG.version}</button>
           <button type="button" class="btn btn-secondary btn-sm rtl-toggle-btn" onclick="toggleRtl()">RTL \u21C4</button>
           <span class="badge badge-mint">\u25CF Sockets Engine Online</span>
           <span class="badge badge-sky" style="max-width: 130px; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(options.host)}</span>
@@ -3010,7 +3011,7 @@ function renderDashboardPage(options) {
         </div>
 
         <!-- Panel Update -->
-        <div class="card" style="margin-bottom: 16px;">
+        <div class="card" id="panelUpdateCard" style="margin-bottom: 16px;">
           <div class="card-title">
             <span>⬆️</span>
             <span>Panel Update</span>
@@ -3028,11 +3029,11 @@ function renderDashboardPage(options) {
               </div>
             </div>
             <p class="card-desc" id="updateTokenHelp">Create the token at <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener">dash.cloudflare.com &rarr; API Tokens</a> with the &ldquo;Edit Cloudflare Workers&rdquo; template. It is used for this update only and never stored. Set it as the <code>CF_API_TOKEN</code> secret to skip this field. Your KV data, secrets and settings are kept.</p>
-            <button type="button" id="updateBtn" class="btn btn-primary" style="width: 100%; height: 40px;" onclick="applyPanelUpdate()">
-              <span id="updateBtnLabel">Update</span>
-              <span>\u{1F680}</span>
-            </button>
           </div>
+          <button type="button" id="updateBtn" class="btn btn-primary" style="width: 100%; height: 40px;" onclick="panelUpdateAction()">
+            <span id="updateBtnLabel">Check for updates</span>
+            <span>\u{1F680}</span>
+          </button>
           <p class="card-desc" style="margin: 10px 0 0;"><span id="updateStatus"></span> <a id="updateNotes" href="https://github.com/BlueKnightNet/Blue-Knight-Panel/releases" target="_blank" rel="noopener" hidden>Release notes</a></p>
         </div>
 
@@ -3215,18 +3216,32 @@ function renderDashboardPage(options) {
       }
     }
 
+    let panelUpdateReady = false;
+    function panelUpdateAction() {
+      return panelUpdateReady ? applyPanelUpdate() : checkPanelUpdate();
+    }
+    function openPanelUpdate() {
+      switchTab('settings');
+      document.getElementById('panelUpdateCard').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
     async function checkPanelUpdate() {
       const status = document.getElementById('updateStatus');
+      status.textContent = 'Checking GitHub for the latest release...';
       try {
         const r = await (await fetch('/panel/settings/update/check', { method: 'POST' })).json();
         if (!r.ok) throw new Error(r.error);
         document.getElementById('updateLatest').textContent = 'v' + r.latest;
-        if (!r.updateAvailable) { status.textContent = 'You are on the latest version.'; return; }
+        if (!r.updateAvailable) { status.textContent = 'You are on the latest version (checked just now).'; return; }
+        const header = document.getElementById('headerUpdateBtn');
+        header.textContent = '⬆️ Update v' + r.latest + ' available';
+        header.className = 'btn btn-primary btn-sm';
         const notes = document.getElementById('updateNotes');
         notes.href = 'https://github.com/BlueKnightNet/Blue-Knight-Panel/releases/tag/v' + r.latest;
         notes.hidden = false;
         if (!r.supported) { status.textContent = 'v' + r.latest + ' is available. ' + r.reason; return; }
         status.textContent = 'v' + r.latest + ' is available.';
+        panelUpdateReady = true;
         document.getElementById('updateScript').value = r.scriptName || '';
         document.getElementById('updateTokenGroup').hidden = r.tokenConfigured;
         document.getElementById('updateTokenHelp').hidden = r.tokenConfigured;
