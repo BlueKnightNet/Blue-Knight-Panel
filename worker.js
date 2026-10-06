@@ -149,7 +149,20 @@ function invalidateSettingsCache() {
 // (older builds and dashboard edits write them), so the snapshot is rebuilt hourly.
 var SETTINGS_SNAPSHOT_MAX_AGE_MS = 36e5;
 // Order matches the destructuring in getOrInitSettings.
-var SETTINGS_FIELDS = ["vlessUuid", "trojanPassword", "proxyPath", "proxyIp", "relayIp", "nat64Prefixes", "subToken", "dnsDoH", "allowLANConnection", "fragmentEnabled", "fragmentPackets", "fragmentLength", "fragmentInterval", "routingPreset", "warpPrivateKey", "warpPeerPublicKey", "warpIPv6", "warpReserved", "warpProEnabled", "warpAmneziaVersion", "warpNoiseCount", "warpNoiseMin", "warpNoiseMax", "warpNoiseDelay", "warpAmneziaS1", "warpAmneziaS2", "warpAmneziaH1", "warpAmneziaH2", "warpAmneziaH3", "warpAmneziaH4", "chainEnabled", "chainType", "chainAddress", "chainPort", "chainAuth", "chainPath", "chainSecurity", "chainTransport", "chainSni", "chainHost", "nodeShareToken", "domainFrontingEnabled", "frontingSni", "frontingHost", "frontingCleanIps", "staticIpList", "openvpnEnabled", "openvpnPort", "openvpnProto", "openvpnCipher", "anytlsFingerprint", "anytlsAlpn", "xhttpEnabled", "xhttpPath", "xhttpMode", "httpUpgradeEnabled", "ssEnabled", "ssPassword", "ssMethod", "dnsCustom", "clientDnsSettings"];
+var SETTINGS_FIELDS = ["vlessUuid", "trojanPassword", "proxyPath", "proxyIp", "relayIp", "nat64Prefixes", "subToken", "dnsDoH", "allowLANConnection", "fragmentEnabled", "fragmentPackets", "fragmentLength", "fragmentInterval", "routingPreset", "warpPrivateKey", "warpPeerPublicKey", "warpIPv6", "warpReserved", "warpProEnabled", "warpAmneziaVersion", "warpNoiseCount", "warpNoiseMin", "warpNoiseMax", "warpNoiseDelay", "warpAmneziaS1", "warpAmneziaS2", "warpAmneziaH1", "warpAmneziaH2", "warpAmneziaH3", "warpAmneziaH4", "chainEnabled", "chainType", "chainAddress", "chainPort", "chainAuth", "chainPath", "chainSecurity", "chainTransport", "chainSni", "chainHost", "nodeShareToken", "domainFrontingEnabled", "frontingSni", "frontingHost", "frontingCleanIps", "staticIpList", "openvpnEnabled", "openvpnPort", "openvpnProto", "openvpnCipher", "anytlsFingerprint", "anytlsAlpn", "xhttpEnabled", "xhttpPath", "xhttpMode", "httpUpgradeEnabled", "ssEnabled", "ssPassword", "ssMethod", "dnsCustom", "clientDnsSettings", "tlsFingerprint", "echConfigList", "finalMask", "cipherSuites"];
+// Cloudflare CDN recipes for Iran's two firewalls (MCI and Irancell), as Xray client TLS settings.
+// "F&F" is the tlshello-0-len finalmask plus the semi-python cipher list. address fills the Clean IP.
+// ALPN stays http/1.1: every link is WebSocket, and offering h2 makes Cloudflare refuse the upgrade.
+var FF_FINAL_MASK = '{"tcp":[{"type":"fragment","settings":{"packets":"tlshello","lengths":["5","94","1"],"delays":["0"],"maxSplit":"0"}},{"type":"fragment","settings":{"packets":"1-1","lengths":["109","1"],"delays":["1"],"maxSplit":"355"}}]}';
+var FF_CIPHER_SUITES = "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256";
+var TLS_PRESETS = {
+  "default": { label: "Default (Chrome, no tricks)", tlsFingerprint: "chrome", echConfigList: "", finalMask: "", cipherSuites: "" },
+  "mci-ech": { label: "MCI (Hamrah-e Aval): ECH", address: "188.114.97.6", tlsFingerprint: "chrome", echConfigList: "cloudflare-ech.com+udp://1.1.1.1", finalMask: "", cipherSuites: "" },
+  "mci-ipv6": { label: "MCI: IPv6 (domain not filtered)", address: "2a06:98c1:3121::7", tlsFingerprint: "chrome", echConfigList: "", finalMask: "", cipherSuites: "" },
+  "mci-ipv6-ff": { label: "MCI: IPv6 + F&F (domain filtered)", address: "2a06:98c1:3121::7", tlsFingerprint: "chrome", echConfigList: "", finalMask: FF_FINAL_MASK, cipherSuites: "" },
+  "irancell-ff": { label: "Irancell: F&F", address: "188.114.97.6", tlsFingerprint: "unsafe", echConfigList: "", finalMask: FF_FINAL_MASK, cipherSuites: FF_CIPHER_SUITES }
+};
+var TLS_FINGERPRINTS = ["chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized", "randomizednoalpn", "unsafe"];
 async function readSettingsValues(kv) {
   // server.js's disk store answers identity keys from env vars; a stored snapshot
   // would pin the old values after those env vars change.
@@ -183,7 +196,8 @@ async function settingsChanged(kv, items) {
   try {
     const snapshot = JSON.parse(await kv.get(KV_KEYS.settingsSnapshot) || "null");
     if (!snapshot?.values) return;
-    for (const { key, value } of items) if (key in snapshot.values) snapshot.values[key] = value;
+    const settingsKeys = new Set(SETTINGS_FIELDS.map((field) => KV_KEYS[field]));
+    for (const { key, value } of items) if (settingsKeys.has(key)) snapshot.values[key] = value;
     await kv.put(KV_KEYS.settingsSnapshot, JSON.stringify(snapshot));
   } catch (err) {
     console.warn("Could not update the settings snapshot, dropping it:", err?.message || err);
@@ -264,6 +278,10 @@ async function getOrInitSettings(env2) {
   let ssMethod = null;
   let dnsCustom = null;
   let clientDnsSettings = null;
+  let tlsFingerprint = null;
+  let echConfigList = null;
+  let finalMask = null;
+  let cipherSuites = null;
   if (kv) {
     try {
       [
@@ -327,7 +345,11 @@ async function getOrInitSettings(env2) {
         ssPassword,
         ssMethod,
         dnsCustom,
-        clientDnsSettings
+        clientDnsSettings,
+        tlsFingerprint,
+        echConfigList,
+        finalMask,
+        cipherSuites
       ] = await readSettingsValues(kv).then((values) => SETTINGS_FIELDS.map((field) => values[KV_KEYS[field]] ?? null));
     } catch (err) {
       // Never fall through to first-run init here: it would mint a new UUID, password
@@ -447,7 +469,12 @@ async function getOrInitSettings(env2) {
     ssPassword: ssPassword ? ssPassword.trim() : "BlueKnight-" + (vlessUuid ? vlessUuid.slice(0, 8) : "Pass2026"),
     ssMethod: ssMethod ? ssMethod.trim() : "chacha20-ietf-poly1305",
     dnsCustom: dnsCustom ? dnsCustom.trim() : "",
-    clientDns: readDns(clientDnsSettings)
+    clientDns: readDns(clientDnsSettings),
+    // Client TLS for the Xray outputs (share links + Xray JSON); see TLS_PRESETS.
+    tlsFingerprint: tlsFingerprint ? tlsFingerprint.trim() : "chrome",
+    echConfigList: echConfigList ? echConfigList.trim() : "",
+    finalMask: finalMask ? finalMask.trim() : "",
+    cipherSuites: cipherSuites ? cipherSuites.trim() : ""
   };
   cachedSettings = settings;
   cachedSettingsTimestamp = now;
@@ -2597,6 +2624,8 @@ function renderDashboardPage(options) {
                   <button type="button" class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 2px 8px; height: 26px;" onclick="setCleanIp('104.19.241.93')">104.19.241.93</button>
                   <button type="button" class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 2px 8px; height: 26px;" onclick="setCleanIp('172.67.180.1')">172.67.180.1</button>
                   <button type="button" class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 2px 8px; height: 26px;" onclick="setCleanIp('162.159.138.6')">162.159.138.6</button>
+                  <button type="button" class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 2px 8px; height: 26px;" onclick="setCleanIp('188.114.97.6')">188.114.97.6</button>
+                  <button type="button" class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 2px 8px; height: 26px;" onclick="setCleanIp('2a06:98c1:3121::7')">2a06:98c1:3121::7 (IPv6)</button>
                 </div>
               </div>
 
@@ -2879,6 +2908,50 @@ function renderDashboardPage(options) {
                     <label class="form-label" style="font-size: 11px;">Interval ms</label>
                     <input type="text" name="fragmentInterval" class="form-control code-input" value="${settings.fragmentInterval}" placeholder="10-20" />
                   </div>
+                </div>
+              </div>
+
+              <!-- Firewall bypass: client TLS for v2ray links and Xray JSON -->
+              <div style="margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--theme-border);">
+                <strong style="font-size: 13.5px;">Firewall Bypass (Client TLS)</strong>
+                <p style="color: var(--theme-text-muted); font-size: 11.5px; margin: 6px 0 10px;">Applied to VLESS/Trojan share links and Xray JSON. Pick your firewall, not your SIM: some MCI SIMs sit behind the Irancell firewall and vice versa. A preset only fills the fields below; change any of them, then save. For several addresses use the Static IP Pool. F&amp;F needs Xray-core 26.9 or newer (older cores reject the mask), and a final mask replaces the fragment settings above. In the client app keep ALPN at http/1.1: offering h2 breaks WebSocket through Cloudflare.</p>
+                <div class="form-group">
+                  <label class="form-label" for="tlsPreset" style="font-size: 11px;">Preset</label>
+                  <select id="tlsPreset" class="form-control" onchange="applyTlsPreset(this.value)">
+                    <option value="">Custom (current values)</option>
+                    ${Object.entries(TLS_PRESETS).map(([id, p]) => `<option value="${id}">${escapeHtml(p.label)}${p.address ? ` (${p.address})` : ""}</option>`).join("")}
+                  </select>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                  <div>
+                    <label class="form-label" for="tlsAddress" style="font-size: 11px;">Address (Clean IP)</label>
+                    <input type="text" id="tlsAddress" name="proxyIp" list="tlsAddressList" class="form-control code-input" value="${escapeHtml(settings.proxyIp)}" placeholder="empty = worker domain" />
+                    <datalist id="tlsAddressList">
+                      <option value="188.114.97.6"></option><option value="2a06:98c1:3121::7"></option>
+                    </datalist>
+                  </div>
+                  <div>
+                    <label class="form-label" for="tlsFingerprint" style="font-size: 11px;">Fingerprint</label>
+                    <select id="tlsFingerprint" name="tlsFingerprint" class="form-control code-input">
+                      ${TLS_FINGERPRINTS.map((fp) => `<option value="${fp}" ${settings.tlsFingerprint === fp ? "selected" : ""}>${fp}</option>`).join("")}
+                    </select>
+                  </div>
+                </div>
+                <div class="form-group" style="margin-top: 8px;">
+                  <label class="form-label" for="echConfigList" style="font-size: 11px;">echConfigList</label>
+                  <input type="text" id="echConfigList" name="echConfigList" list="echLookupList" class="form-control code-input" value="${escapeHtml(settings.echConfigList)}" placeholder="cloudflare-ech.com+udp://1.1.1.1 (empty = off)" />
+                  <datalist id="echLookupList">
+                    <option value="cloudflare-ech.com+udp://1.1.1.1"></option><option value="cloudflare-ech.com+udp://8.8.8.8"></option><option value="cloudflare-ech.com+https://${options.host}/dns-query"></option>
+                  </datalist>
+                  <div style="color: var(--theme-text-muted); font-size: 11px; margin-top: 4px;">The client fetches Cloudflare's ECH key from this DNS server first. If ECH will not connect, try another one: 1.1.1.1 port 53 is blocked on some networks.</div>
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="finalMask" style="font-size: 11px;">finalMask (JSON)</label>
+                  <textarea id="finalMask" name="finalMask" class="form-control code-input" rows="3" placeholder="empty = off" style="resize: vertical; font-size: 11px;">${escapeHtml(settings.finalMask)}</textarea>
+                </div>
+                <div class="form-group" style="margin-bottom: 0;">
+                  <label class="form-label" for="cipherSuites" style="font-size: 11px;">cipherSuites</label>
+                  <textarea id="cipherSuites" name="cipherSuites" class="form-control code-input" rows="2" placeholder="empty = client default" style="resize: vertical; font-size: 11px;">${escapeHtml(settings.cipherSuites)}</textarea>
                 </div>
               </div>
             </div>
@@ -3206,6 +3279,15 @@ function renderDashboardPage(options) {
       if (el1) el1.value = url;
       if (el2) el2.value = url;
       showToast('Selected DoH: ' + url);
+    }
+
+    const TLS_PRESETS = ${JSON.stringify(TLS_PRESETS)};
+    function applyTlsPreset(id) {
+      const preset = TLS_PRESETS[id];
+      if (!preset) return;
+      for (const field of ['tlsFingerprint', 'echConfigList', 'finalMask', 'cipherSuites']) document.getElementById(field).value = preset[field];
+      if (preset.address) document.getElementById('tlsAddress').value = preset.address;
+      showToast('Loaded ' + preset.label + '. Edit anything, then save.');
     }
 
     function setCleanIp(ip) {
@@ -3835,6 +3917,22 @@ async function handlePanel(request, env2) {
           check(KV_KEYS.fragmentLength, "fragmentLength", String(formData.get("fragmentLength") || "100-200").trim(), currentSettings.fragmentLength);
           check(KV_KEYS.fragmentInterval, "fragmentInterval", String(formData.get("fragmentInterval") || "10-20").trim(), currentSettings.fragmentInterval);
         }
+        if (formData.has("tlsFingerprint")) {
+          initialTab = "routing";
+          const fp = String(formData.get("tlsFingerprint") || "chrome").trim();
+          if (!TLS_FINGERPRINTS.includes(fp)) throw new Error("Unknown TLS fingerprint.");
+          let finalMask = String(formData.get("finalMask") || "").trim();
+          if (finalMask) {
+            let parsed = null;
+            try { parsed = JSON.parse(finalMask); } catch {}
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error('finalMask must be a JSON object, e.g. {"tcp":[...]}.');
+            finalMask = JSON.stringify(parsed);
+          }
+          check(KV_KEYS.tlsFingerprint, "tlsFingerprint", fp, currentSettings.tlsFingerprint);
+          check(KV_KEYS.echConfigList, "echConfigList", String(formData.get("echConfigList") || "").trim(), currentSettings.echConfigList);
+          check(KV_KEYS.finalMask, "finalMask", finalMask, currentSettings.finalMask);
+          check(KV_KEYS.cipherSuites, "cipherSuites", String(formData.get("cipherSuites") || "").replace(/\s+/g, ""), currentSettings.cipherSuites);
+        }
         if (formData.has("routingPreset")) {
           initialTab = "routing";
           check(KV_KEYS.routingPreset, "routingPreset", String(formData.get("routingPreset") || "off").trim(), currentSettings.routingPreset);
@@ -4202,9 +4300,27 @@ async function handleSubscription(pathname, request, env2) {
   const encodedPath = encodeURIComponent(proxyPath);
   const xhttpPath = (settings.xhttpPath || "/bk-xhttp").startsWith("/") ? settings.xhttpPath : `/${settings.xhttpPath}`;
   const encodedXhttpPath = encodeURIComponent(xhttpPath);
-  const fragmentQuery = settings.fragmentEnabled ? `&fragment=${encodeURIComponent(`${settings.fragmentPackets},${settings.fragmentLength},${settings.fragmentInterval}`)}` : "";
-  const fp = "chrome";
-  const alpn = "http%2F1.1";
+  // A finalmask already fragments the ClientHello; stacking the legacy fragment on top breaks it.
+  const fragmentQuery = settings.fragmentEnabled && !settings.finalMask ? `&fragment=${encodeURIComponent(`${settings.fragmentPackets},${settings.fragmentLength},${settings.fragmentInterval}`)}` : "";
+  let finalMask = null;
+  try { finalMask = settings.finalMask ? JSON.parse(settings.finalMask) : null; } catch {}
+  // Xray share-link names: fp, alpn, ech (echConfigList), fm (finalmask JSON), cs (cipherSuites).
+  const tlsQuery = [["fp", settings.tlsFingerprint], ["alpn", "http/1.1"], ["ech", settings.echConfigList], ["fm", finalMask && settings.finalMask], ["cs", settings.cipherSuites]]
+    .filter(([, v]) => v).map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join("");
+  const xrayStream = (sni, host) => ({
+    network: "ws",
+    security: "tls",
+    tlsSettings: {
+      serverName: sni,
+      allowInsecure: false,
+      fingerprint: settings.tlsFingerprint,
+      alpn: ["http/1.1"],
+      ...settings.echConfigList ? { echConfigList: settings.echConfigList } : {},
+      ...settings.cipherSuites ? { cipherSuites: settings.cipherSuites } : {}
+    },
+    wsSettings: { path: proxyPath, headers: { Host: host } },
+    ...finalMask ? { finalmask: finalMask } : {}
+  });
   const staticIps = (settings.staticIpList || "").split(/[,\n\s]+/).map((s) => s.trim()).filter((s) => s.length > 0);
   const isFronting = settings.domainFrontingEnabled && Boolean(settings.frontingSni);
   const frontSni = settings.frontingSni || "cdnjs.cloudflare.com";
@@ -4220,7 +4336,7 @@ async function handleSubscription(pathname, request, env2) {
   const uriAddress = address => address.includes(":") && !address.startsWith("[") ? `[${address}]` : address;
   const links = type => nodes.map(node => {
     const auth = type === "vless" ? settings.vlessUuid : encodeURIComponent(settings.trojanPassword);
-    return `${type}://${auth}@${uriAddress(node.address)}:${node.port}?${type === "vless" ? "encryption=none&" : ""}security=tls&type=ws&path=${encodedPath}&host=${encodeURIComponent(node.host)}&sni=${encodeURIComponent(node.sni)}&fp=${fp}&alpn=${alpn}${type === "vless" ? fragmentQuery : ""}#${encodeURIComponent(`BlueKnight-${type === "vless" ? "VLESS" : "Trojan"}-${node.suffix}`)}`;
+    return `${type}://${auth}@${uriAddress(node.address)}:${node.port}?${type === "vless" ? "encryption=none&" : ""}security=tls&type=ws&path=${encodedPath}&host=${encodeURIComponent(node.host)}&sni=${encodeURIComponent(node.sni)}${tlsQuery}${type === "vless" ? fragmentQuery : ""}#${encodeURIComponent(`BlueKnight-${type === "vless" ? "VLESS" : "Trojan"}-${node.suffix}`)}`;
   });
   const ssNodes = settings.ssEnabled && SS_METHODS.includes(settings.ssMethod) ? nodes.filter(node => node.host === node.sni) : [];
   const ssPath = `${proxyPath}/ss`;
@@ -4680,22 +4796,7 @@ rules:${clashDnsRules(settings.clientDns)}${clashRules}
           }
         ]
       },
-      streamSettings: {
-        network: "ws",
-        security: "tls",
-        tlsSettings: {
-          serverName: sni,
-          allowInsecure: false,
-          fingerprint: "chrome",
-          alpn: ["http/1.1"]
-        },
-        wsSettings: {
-          path: proxyPath,
-          headers: {
-            Host: host
-          }
-        }
-      }
+      streamSettings: xrayStream(sni, host)
     }));
     const trojanOutbounds = nodes.map(({ port, address, host, sni, suffix }) => ({
       tag: `BlueKnight-Trojan-${suffix}`,
@@ -4710,22 +4811,7 @@ rules:${clashDnsRules(settings.clientDns)}${clashRules}
           }
         ]
       },
-      streamSettings: {
-        network: "ws",
-        security: "tls",
-        tlsSettings: {
-          serverName: sni,
-          allowInsecure: false,
-          fingerprint: "chrome",
-          alpn: ["http/1.1"]
-        },
-        wsSettings: {
-          path: proxyPath,
-          headers: {
-            Host: host
-          }
-        }
-      }
+      streamSettings: xrayStream(sni, host)
     }));
     const xrayRules = [];
     const xrayCountries = bypassCountries(settings.routingPreset);
@@ -5789,6 +5875,10 @@ async function handleNodeExport(request, env2) {
       fragmentLength: settings.fragmentLength,
       fragmentInterval: settings.fragmentInterval,
       routingPreset: settings.routingPreset,
+      tlsFingerprint: settings.tlsFingerprint,
+      echConfigList: settings.echConfigList,
+      finalMask: settings.finalMask,
+      cipherSuites: settings.cipherSuites,
       // Warp Pro & AmneziaWG
       warpProEnabled: settings.warpProEnabled,
       warpPeerPublicKey: settings.warpPeerPublicKey,
@@ -5969,6 +6059,9 @@ async function handleNodeImport(request, env2) {
     }
     if (typeof importData.chainSni === "string") {
       queueWrite(KV_KEYS.chainSni, importData.chainSni, currentSettings.chainSni, "chainSni");
+    }
+    for (const field of ["tlsFingerprint", "echConfigList", "finalMask", "cipherSuites"]) {
+      if (typeof importData[field] === "string") queueWrite(KV_KEYS[field], importData[field], currentSettings[field], field);
     }
     if (typeof importData.chainHost === "string") {
       queueWrite(KV_KEYS.chainHost, importData.chainHost, currentSettings.chainHost, "chainHost");
@@ -6902,7 +6995,7 @@ var init_worker = __esm({
     APP_CONFIG = {
       name: "BlueKnight Panel",
       tagline: "Ethereal Pastel Encrypted DNS & Multi-Protocol Proxy",
-      version: "5.2.6",
+      version: "5.2.7",
       // bk_* is the BlueKnight cookie; wd_session is still accepted so sessions
       // issued before the rename keep working until they expire.
       cookieName: "bk_session",
@@ -6994,7 +7087,12 @@ var init_worker = __esm({
       ssMethod: "config:ss_method",
       // Custom DNS
       dnsCustom: "config:dns_custom",
-      clientDnsSettings: "config:client_dns"
+      clientDnsSettings: "config:client_dns",
+      // Client TLS (anti-DPI presets)
+      tlsFingerprint: "config:tls_fingerprint",
+      echConfigList: "config:ech_config_list",
+      finalMask: "config:final_mask",
+      cipherSuites: "config:cipher_suites"
     };
     __name(generateRandomToken, "generateRandomToken");
     __name2(generateRandomToken, "generateRandomToken");

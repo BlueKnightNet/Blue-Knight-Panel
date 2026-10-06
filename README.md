@@ -115,6 +115,26 @@ link rebuilds itself, so you never re-enter a config by hand.
 
 <br>
 
+### On a filtered network (MCI, Irancell)
+
+Open **Routing → Firewall Bypass**, pick the preset for your *firewall*, save,
+then update the subscription in your client. Some MCI SIMs sit behind the
+Irancell firewall and vice versa, so if one preset fails, try the other.
+
+| Preset | What it sets |
+| :--- | :--- |
+| **MCI: ECH** | Address `188.114.97.6`, fingerprint `chrome`, ECH key from `cloudflare-ech.com+udp://1.1.1.1` |
+| **MCI: IPv6** | Address `2a06:98c1:3121::7`, fingerprint `chrome` |
+| **MCI: IPv6 + F&F** | As above plus the F&F mask, for when your worker's domain itself is filtered |
+| **Irancell: F&F** | Address `188.114.97.6`, fingerprint `unsafe`, F&F mask and cipher list |
+
+Every field stays editable: change the address or any value, then save.
+
+- **F&F needs Xray-core 26.9 or newer** in your client app. Older cores reject the mask and the config won't start.
+- **ECH won't connect?** Your network may block the DNS server that fetches Cloudflare's ECH key. Choose `udp://8.8.8.8` or your panel's own `/dns-query` from the field's suggestions.
+- **Keep ALPN at `http/1.1`** in your client. Offering `h2` breaks WebSocket connections through Cloudflare.
+- These settings reach the **vless**, **trojan** and Xray JSON links. sing-box and Clash don't support them.
+
 ### Using the DNS side
 
 Your panel is also an encrypted-DNS (DoH) server. Point any device or browser at:
@@ -226,6 +246,7 @@ whole layout folds down to a phone screen with a slide-out menu.
 | **You have to set a password again after a while** | Your host has no persistent storage attached — add the KV binding, the volume, or the Redis store for that platform |
 | **Clients connect but nothing loads (Netlify)** | Netlify cannot carry proxy tunnels. Host the tunnel elsewhere and use Netlify for the panel only |
 | **A subscription link returns 404** | Copy it from the Subscriptions tab again — the token changed, usually because storage was reset |
+| **Error 1101 on every page, even images, and no logs** | Cloudflare stopped running the Worker before your code starts. Redeploy it (or press **Update**); if that doesn't clear it, deploy the same file as a new Worker name and re-import your subscription |
 | **An error mentioning imports or `nodejs_compat`** | Enable the `nodejs_compat` flag and set the compatibility date to `2024-09-23` or later |
 
 Still stuck? Ask on **[@BlueKnight_Net](https://t.me/BlueKnight_Net)**.

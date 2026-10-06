@@ -31,3 +31,8 @@ id = "YOUR_KV_NAMESPACE_ID"   # <-- replace me
 # reject a Workers config, so Pages deployments must set the BK_KV binding in
 # the dashboard (Settings -> Functions -> KV namespace bindings) and this file
 # should be removed or ignored in the Pages build.
+
+# Workers Logs: keeps exceptions searchable in the dashboard. Without it a
+# Worker that fails with error 1101 leaves nothing to diagnose.
+[observability]
+enabled = true

@@ -14,3 +14,8 @@ binding = "ASSETS"
 [[kv_namespaces]]
 binding = "BK_KV"
 id = "YOUR_KV_NAMESPACE_ID"   # <-- replace me (npx wrangler kv namespace create BK_KV)
+
+# Workers Logs: keeps exceptions searchable in the dashboard. Without it a
+# Worker that fails with error 1101 leaves nothing to diagnose.
+[observability]
+enabled = true
